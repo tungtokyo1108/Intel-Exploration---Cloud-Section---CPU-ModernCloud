@@ -11,6 +11,7 @@ using namespace std;
 
 int main() {
 	cout << "Let's to start" << endl;
+	return 0;
 }
 
 
