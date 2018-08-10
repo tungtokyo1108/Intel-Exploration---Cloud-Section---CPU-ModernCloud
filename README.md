@@ -1,2 +1,2 @@
-# Intel-Study---Hardware-Section---Video-Acceleration
-Source: https://github.com/intel/libva
+# Intel-Study---Hardware-Section---NEMU, a cloud hypervisor
+Source: https://github.com/intel/nemu
