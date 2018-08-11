@@ -2,7 +2,7 @@
  * atomic.h
  *
  *  Created on: Aug 11, 2018
- *      Author: tungdang
+ *      Student: Tung Dang
  */
 
 #ifndef QEMU_ATOMIC_H_
