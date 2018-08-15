@@ -2,7 +2,7 @@
  * host-utils.h
  *
  *  Created on: Aug 15, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_HOST_UTILS_H_
