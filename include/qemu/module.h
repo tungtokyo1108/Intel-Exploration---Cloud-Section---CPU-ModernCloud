@@ -2,7 +2,7 @@
  * module.h
  *
  *  Created on: Aug 16, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_MODULE_H_
