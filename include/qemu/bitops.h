@@ -2,7 +2,7 @@
  * bitops.h
  *
  *  Created on: Aug 15, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_BITOPS_H_
