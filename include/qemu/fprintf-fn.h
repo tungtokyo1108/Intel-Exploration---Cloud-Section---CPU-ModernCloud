@@ -2,7 +2,7 @@
  * fprintf-fn.h
  *
  *  Created on: Aug 16, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_FPRINTF_FN_H_
