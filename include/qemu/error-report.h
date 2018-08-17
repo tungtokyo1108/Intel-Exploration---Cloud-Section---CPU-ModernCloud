@@ -2,7 +2,7 @@
  * error-report.h
  *
  *  Created on: Aug 17, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_ERROR_REPORT_H_
