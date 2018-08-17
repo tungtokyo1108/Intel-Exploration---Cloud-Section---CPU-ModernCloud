@@ -2,7 +2,7 @@
  * option.h
  *
  *  Created on: Aug 17, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_OPTION_H_
