@@ -72,7 +72,13 @@ int64_t timerlist_deadline_ns(QEMUTimerList *timer_list);
 bool timerlist_run_timers(QEMUTimerList *timer_list);
 void timerlist_notify(QEMUTimerList *timer_list);
 void timerlistgroup_init(QEMUTimerListGroup *tlg, QEMUTimerListNotifyCB *cb, void *opaque);
+bool timerlistgroup_run_timers(QEMUTimerListGroup *tlg);
 
+int64_t timerlistgroup_deadline_ns(QEMUTimerListGroup *tlg);
+void timer_init_tl(QEMUTimer *ts, QEMUTimerList *timer_list, int scale, QEMUTimerCB *cb, void *opaque);
+static inline void timer_init(QEMUTimer *ts, QEMUClockType type, int scale, QEMUTimerCB *cb, void *opaque) {
+	timer_init_tl(ts,main_loop_tlg.tl[type],scale,cb,opaque);
+}
 
 #endif /* QEMU_TIMER_H_ */
 
