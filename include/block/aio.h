@@ -45,7 +45,7 @@ struct Coroutine;
 struct ThreadPool;
 struct LinuxAioState;
 
-struct AioContext {
+typedef struct AioContext {
 	// GSource source;
 	QemuRecMutex lock;
 	QLIST_HEAD(, AioHandler) aio_handlers;
@@ -70,7 +70,7 @@ struct AioContext {
 	int epollfd;
 	bool epoll_enabled;
 	bool epoll_available;
-};
+} AioContext;
 
 AioContext *aio_context_new(Error **errp);
 void aio_context_ref(AioContext *ctx);
@@ -145,3 +145,46 @@ void aio_context_set_poll_params(AioContext *ctx, int64_t max_ns,
                                  int64_t grow, int64_t shrink, Error **errp);
 
 #endif /* BLOCK_AIO_H_ */
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
