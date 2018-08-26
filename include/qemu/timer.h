@@ -80,58 +80,134 @@ static inline void timer_init(QEMUTimer *ts, QEMUClockType type, int scale, QEMU
 	timer_init_tl(ts,main_loop_tlg.tl[type],scale,cb,opaque);
 }
 
+static inline void timer_init_ns(QEMUTimer *ts, QEMUClockType type, QEMUTimerCB *cb, void *opaque) {
+	timer_init(ts,type,SCALE_NS,cb,opaque);
+}
+
+static inline void timer_init_us(QEMUTimer *ts, QEMUClockType type, QEMUTimerCB *cb, void *opaque) {
+	timer_init(ts,type,SCALE_US,cb,opaque);
+}
+
+static inline void timer_init_ms(QEMUTimer *ts, QEMUClockType type, QEMUTimerCB *cb, void *opaque) {
+	timer_init(ts,type,SCALE_MS,cb,opaque);
+}
+
+static inline QEMUTimer *timer_new_tl(QEMUTimerList *timer_list, int scale, QEMUTimerCB *cb, void *opaque){
+	QEMUTimer *ts = g_malloc0(sizeof(QEMUTimer));
+	timer_init_tl(ts, timer_list, scale, cb, opaque);
+	return ts;
+}
+
+static inline QEMUTimer *timer_new(QEMUClockType type, int scale, QEMUTimerCB *cb, void *opaque) {
+	return timer_new_tl(main_loop_tlg.tl[type],scale,cb,opaque);
+}
+
+static inline QEMUTimer *timer_new_ns(QEMUClockType type, QEMUTimerCB *cb, void *opaque) {
+	return timer_new(type,SCALE_NS,cb,opaque);
+}
+
+static inline QEMUTimer *timer_new_us(QEMUClockType type, QEMUTimerCB *cb,
+                                      void *opaque)
+{
+    return timer_new(type, SCALE_US, cb, opaque);
+}
+
+static inline QEMUTimer *timer_new_ms(QEMUClockType type, QEMUTimerCB *cb,
+                                      void *opaque)
+{
+    return timer_new(type, SCALE_MS, cb, opaque);
+}
+
+void timer_deinit(QEMUTimer *ts);
+static inline void timer_free(QEMUTimer *ts) {
+	g_free(ts);
+}
+
+void timer_del(QEMUTimer *ts);
+void timer_mod_ns(QEMUTimer *ts, int64_t expire_time);
+void timer_mod_anticipate_ns(QEMUTimer *ts, int64_t expire_time);
+void timer_mod(QEMUTimer *ts, int64_t expire_timer);
+void timer_mod_anticipate(QEMUTimer *ts, int64_t expire_time);
+bool timer_pending(QEMUTimer *ts);
+uint64_t timer_expire_time_ns(QEMUTimer *ts);
+void timer_get(QEMUFile *f, QEMUTimer *ts);
+void timer_put(QEMUFile *f, QEMUTimer *ts);
+int qemu_timeout_ns_to_ms(int64_t ns);
+int qemu_poll_ns(GPollFD *fds, guint nfds, int64_t timeout);
+static inline int64_t qemu_soonest_timeout(int64_t timeout1, int64_t timeout2) {
+	return ((uint64_t) timeout1 < (uint64_t) timeout2) ? timeout1 : timeout2;
+}
+
+void init_clocks(QEMUTimerListNotifyCB *notify_cb);
+int64_t cpu_get_ticks(void);
+void cpu_enable_ticks(void);
+void cpu_disable_ticks(void);
+static inline int64_t get_max_clock_jump(void) {
+	return 60 * NANOSECONDS_PER_SECOND;
+}
+
+static inline int64_t get_clock_realtime(void) {
+	struct timeval tv;
+	gettimeofday(&tv,NULL);
+	return tv.tv_sec * 1000000000LL + (tv.tv_usec * 1000);
+}
+
+extern int use_rt_clock;
+static inline int64_t get_clock(void)
+{
+#ifdef CLOCK_MONOTONIC
+    if (use_rt_clock) {
+        struct timespec ts;
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        return ts.tv_sec * 1000000000LL + ts.tv_nsec;
+    } else
+#endif
+    {
+        return get_clock_realtime();
+    }
+}
+
+int64_t cpu_get_icount_raw(void);
+int64_t cpu_get_icount(void);
+int64_t cpu_get_clock(void);
+int64_t cpu_icount_to_ns(int64_t icount);
+void cpu_update_icount(CPUState *cpu);
+#if defined(__i386__)
+
+static inline int64_t cpu_get_host_ticks(void)
+{
+    int64_t val;
+    asm volatile ("rdtsc" : "=A" (val));
+    return val;
+}
+
+#elif defined(__x86_64__)
+
+static inline int64_t cpu_get_host_ticks(void)
+{
+    uint32_t low,high;
+    int64_t val;
+    asm volatile("rdtsc" : "=a" (low), "=d" (high));
+    val = high;
+    val <<= 32;
+    val |= low;
+    return val;
+}
+#else
+static inline int64_t cpu_get_host_ticks(void)
+{
+    return get_clock();
+}
+#endif
+
+#ifdef CONFIG_PROFILER
+static inline int64_t profile_getclock(void)
+{
+    return get_clock();
+}
+
+extern int64_t tcg_time;
+extern int64_t dev_time;
+#endif
+
 #endif /* QEMU_TIMER_H_ */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
