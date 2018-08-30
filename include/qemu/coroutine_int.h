@@ -12,13 +12,15 @@
 #include "qemu/coroutine.h"
 
 #define COROUTINE_STACK_SIZE (1 << 20)
+typedef struct Coroutine Coroutine;
+
 typedef enum {
 	COROUTINE_YIELD = 1,
 	COROUTINE_TERMINATE = 2,
 	COROUTINE_ENTER = 3,
 } CoroutineAction;
 
-struct Coroutine {
+typedef struct Coroutine {
 	CoroutineEntry *entry;
 	void *entry_arg;
 	Coroutine *caller;
@@ -29,7 +31,7 @@ struct Coroutine {
 	QSIMPLEQ_ENTRY(Coroutine) co_queue_next;
 	QSIMPLEQ_HEAD(, Coroutine) co_queue_wakeup;
 	QLIST_ENTRY(Coroutine) co_scheduled_next;
-};
+} Coroutine;
 
 Coroutine *qemu_coroutine_new(void);
 void qemu_coroutine_delete(Coroutine *co);
