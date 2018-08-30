@@ -10,10 +10,11 @@
 
 #include "qemu-common.h"
 
-struct EventNotifier {
+typedef struct EventNotifier EventNotifier;
+typedef struct EventNotifier {
 	int rfd;
 	int wfd;
-};
+} EventNotifier;
 
 typedef void EventNotifierHandler(EventNotifier *);
 int event_notifier_init(EventNotifier *, int active);
