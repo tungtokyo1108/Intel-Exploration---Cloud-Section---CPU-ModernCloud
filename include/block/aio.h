@@ -44,7 +44,7 @@ typedef void IOHandler(void *opaque);
 struct Coroutine;
 struct ThreadPool;
 struct LinuxAioState;
-
+typedef struct AioContext AioContext;
 typedef struct AioContext {
 	// GSource source;
 	QemuRecMutex lock;
