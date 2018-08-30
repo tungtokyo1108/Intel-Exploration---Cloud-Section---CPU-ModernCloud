@@ -12,7 +12,7 @@
 #define READLINE_MAX_CMDS 64
 #define READLINE_MAX_COMPLETION 256
 
-typedef void ReadLinePrintFunc(void *opaque, const char *fmt, ...);
+typedef void ReadLinePrintfFunc(void *opaque, const char *fmt, ...);
 typedef void ReadLineFlushFunc(void *opaque);
 typedef void ReadLineFunc(void *opaque, const char *str, void *readline_opaque);
 typedef void ReadLineCompletionFunc(void *opaque, const char *cmdline);
@@ -37,7 +37,7 @@ typedef struct ReadLineState {
 	int read_password;
 	char prompt[256];
 
-	ReadLinePrintFunc *printf_func;
+	ReadLinePrintfFunc *printf_func;
 	ReadLineFlushFunc *flush_func;
 	void *opaque;
 };
