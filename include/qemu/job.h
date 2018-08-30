@@ -14,6 +14,10 @@
 
 typedef struct JobDriver JobDriver;
 typedef struct JobTxn JobTxn;
+typedef struct JobStatus JobStatus;
+typedef struct Coroutine Coroutine;
+typedef struct JobType JobType;
+typedef struct JobVerb JobVerb;
 
 typedef struct Job {
 	char *id;
