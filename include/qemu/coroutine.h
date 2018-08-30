@@ -10,10 +10,11 @@
 
 #include "qemu/queue.h"
 #include "qemu/timer.h"
+#include "qemu/coroutine_int.h"
 
 #define coroutine_fn
 
-typedef struct Coroutine Coroutine;
+// typedef struct Coroutine Coroutine;
 typedef void coroutine_fn CoroutineEntry(void *opaque);
 Coroutine *qemu_coroutine_create(CoroutineEntry *entry, void *opaque);
 void qemu_coroutine_enter(Coroutine *coroutine);
