@@ -27,6 +27,11 @@ enum QemuOptType {
 	QEMU_OPT_SIZE,
 };
 
+typedef struct QemuOptDesc QemuOptDesc;
+typedef struct QemuOptsList QemuOptsList;
+typedef struct QemuOpt QemuOpt;
+typedef struct QemuOpts QemuOpts;
+
 typedef struct QemuOptDesc {
 	const char *name;
 	enum QemuOptType type;
