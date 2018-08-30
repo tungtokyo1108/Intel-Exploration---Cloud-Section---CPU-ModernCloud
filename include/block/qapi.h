@@ -2,7 +2,7 @@
  * qapi.h
  *
  *  Created on: Aug 30, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef BLOCK_QAPI_H_
