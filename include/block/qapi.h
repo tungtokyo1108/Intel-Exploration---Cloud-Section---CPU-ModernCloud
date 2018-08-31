@@ -11,6 +11,9 @@
 #include "block/block.h"
 #include "block/snapshot.h"
 
+typedef struct ImageInfo ImageInfo;
+typedef struct ImageInfoSpecific ImageInfoSpecific;
+
 BlockDriverInfo *bdrv_block_device_info(BlockBackend *blk, BlockDriverState *bs, Error **errp);
 int bdrv_query_snapshot_info_list(BlockDriverState *bs, QEMUSnapshotInfo **p_list, Error **errp);
 void bdrv_query_image_info(BlockDriverState *bs, ImageInfo **p_info, Error **errp);
