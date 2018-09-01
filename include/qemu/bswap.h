@@ -2,7 +2,7 @@
  * bswap.h
  *
  *  Created on: Aug 14, 2018
- *      Author: tungdang
+ *      Student (coder): Tung Dang
  */
 
 #ifndef QEMU_BSWAP_H_
