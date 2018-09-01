@@ -15,9 +15,9 @@
 #include <assert.h>
 
 #define BITMAP_FIRST_WORD_MASK(start) (~OUL << ((start) & (BIT_PER_LONG - 1)))
-#define BITMAP_LAST_WORD_MASK(nbits) (~OUL >> (-(nbits) & (BIT_PER_LONG - 1)))
+#define BITMAP_LAST_WORD_MASK(nbits) (~OUL >> (-(nbits) & (BITS_PER_LONG - 1)))
 #define DECLARE_BITMAP(name,bits) \
-	unsigned long name[BITS_TO_LONGS(bits)]
+	unsigned long name[BITS_PER_LONG(bits)]
 #define small_nbits(nbits) \
 	((nbits) <= BITS_PER_LONG)
 
@@ -33,7 +33,7 @@ int slow_bitmap_intersects(const unsigned long *bitmap1, const unsigned long *bi
 long slow_bitmap_count_one(const unsigned long *bitmap, long nbits);
 
 static inline unsigned long *bitmap_try_new(long nbits) {
-	long len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
+	long len = BITS_PER_LONG(nbits) * sizeof(unsigned long);
 	return g_try_malloc0(len);
 }
 
@@ -51,13 +51,13 @@ static inline void bitmap_zero(unsigned long *dst, long nbits) {
 	}
 	else
 	{
-		long len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
+		long len = BITS_PER_LONG(nbits) * sizeof(unsigned long);
 		memset(dst,0,len);
 	}
 }
 
 static inline void bitmap_fill(unsigned long *dst, long nbits) {
-	size_t nlongs = BITS_TO_LONGS(nbits);
+	size_t nlongs = BITS_PER_LONG(nbits);
 	if (!small_nbits(nbits))
 	{
 		long len = (nlongs - 1) * sizeof(unsigned long);
@@ -73,7 +73,7 @@ static inline void bitmap_copy(unsigned long *dst, const unsigned long *src, lon
 	}
 	else
 	{
-		long len = BITS_TO_LONGS(nbits) * sizeof(unsigned long);
+		long len = BITS_PER_LONG(nbits) * sizeof(unsigned long);
 		memcpy(dst,src,len);
 	}
 }
