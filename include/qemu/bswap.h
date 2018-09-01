@@ -48,7 +48,7 @@ static inline void bswap64s(uint64_t *s) {
 #define le_bswaps(v,size)
 #define be_bswaps(p,size) do {*p = glue(bswap,size)(*p);} while(0)
 
-/*
+
 #define CPU_CONVERT(endian,size,type) \
 static inline type endian ## size ## _to_cpu(type v) \
 {\
@@ -76,7 +76,6 @@ CPU_CONVERT(be, 64, uint64_t)
 CPU_CONVERT(le, 16, uint16_t)
 CPU_CONVERT(le, 32, uint32_t)
 CPU_CONVERT(le, 64, uint64_t)
-*/
 
 static inline uint32_t qemu_bswap_len(uint32_t value, int len) {
 	return bswap32(value) >> (32 - 8 * len);
