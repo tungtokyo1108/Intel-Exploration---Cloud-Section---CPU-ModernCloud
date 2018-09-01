@@ -17,6 +17,7 @@
 # include <byteswap.h>
 #include <stdio.h>
 #include <string.h>
+#include "qemu/osdep.h"
 
 static inline uint16_t bswap16(uint16_t x) {
 	return bswap_16(x);
@@ -283,51 +284,3 @@ static inline void stfq_be_p(void *ptr, float64 v)
 }
 
 #endif /* QEMU_BSWAP_H_ */
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
