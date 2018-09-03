@@ -10,6 +10,7 @@
 
 #include "qemu/queue.h"
 #include "qemu/osdep.h"
+#include "qemu/typedefs.h"
 
 typedef struct TypeImpl TypeImpl;
 typedef struct TypeImpl *Type;
@@ -18,8 +19,13 @@ typedef struct Object Object;
 typedef struct TypeInfo TypeInfo;
 typedef struct InterfaceClass InterfaceClass;
 typedef struct InterfaceInfo InterfaceInfo;
-typedef struct OjectProperty OjectProperty;
+typedef struct ObjectProperty ObjectProperty;
 
+typedef struct gchar gchar;
+typedef struct GSList GSList;
+typedef struct GHashTable GHashTable;
+typedef struct GHashTableIter GHashTableIter;
+typedef struct QEnumLookup QEnumLookup;
 
 #define TYPE_OBJECT "object"
 
@@ -211,7 +217,7 @@ int64_t object_property_get_int(Object *obj, const char *name, Error **errp);
 void object_property_set_uint(Object *obj, uint64_t value, const char *name, Error **errp);
 uint64_t object_property_get_uint(Object *obj, const char *name, Error **errp); // the value of the property, convert to an unsigned integer
 int object_property_get_enum(Object *obj, const char *name, const char *type_name, Error **errp); // the value of the property, convert to an integer
-void object_property_get_uint16List(Object *obj, const char *name, uint16List **list, Error **errp);
+// void object_property_get_uint16List(Object *obj, const char *name, uint16List **list, Error **errp);
 void object_property_set(Object *obj, Visitor *v, const char *name, Error **errp);
 
 // Parse a string and write the result into a property of an object
