@@ -439,4 +439,342 @@ void memory_region_iommu_replay_all(IOMMUMemoryRegion *iommu_mr);
 // unregister a notifier for changes to IOMMU translation entries
 void memory_region_unregister_iommu_notifier(MemoryRegion *mr, IOMMUNotifier *n);
 
+int memory_region_iommu_get_attr(IOMMUMemoryRegion *iommu_mr, enum IOMMUMemoryRegionAttr attr, void *data);
+
+// return the IOMMU index to use for translations with the given memory transaction attributes
+int memory_region_iommu_attrs_to_index(IOMMUMemoryRegion *iommu_mr, MemTxAttrs attrs);
+int memory_region_iommu_num_indexes(IOMMUMemoryRegion *iommu_mr);
+
+// whether a memory region is logging writes
+bool memory_region_is_logging(MemoryRegion *mr, uint8_t client);
+uint8_t memory_region_get_dirty_log_mask(MemoryRegion *mr);
+
+static inline bool memory_region_is_rom(MemoryRegion *mr) {
+	return mr->ram && mr->readonly;
+}
+
+// a file descriptor backing a RAM memory region
+int memory_region_get_fd(MemoryRegion *mr);
+
+/**
+ * Convert a pointer into a RAM memory region and an offset within it
+ * Given a host pointer inside a RAM memory region, return the MemoRegion and offset within it
+ */
+
+MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset);
+
+// Get pointer into RAM memory region
+
+void *memory_region_get_ram_ptr(MemoryRegion *mr);
+
+// Resize a RAM region. Only legal guest might have detected the memory size
+
+void memory_region_ram_resize(MemoryRegion *mr, ram_addr_t newsize, Error **errp);
+void memory_region_set_log(MemoryRegion *mr, bool log, unsigned client);
+bool memory_region_get_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size, unsigned client);
+void memory_region_set_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size);
+
+/**
+ * Create a snapshot of the dirty bitmap, clears the dirty bitmap and return the snapshot
+ * The snapshot can be used to query dirty status.
+ * Snapshotting allows querying the same page multiple times which is useful for display updates where scanlines are not aligned
+ *
+ * The dirty bitmap region which get copyed into the snapshot can be larger than requested.
+ * The boundaries are rounded up/down so complete bitmap longs can be copied over into the bitmap snapshot.
+ * (convert 64 pages on 64 bits hosts)
+ */
+
+DirtyBitmapSnapshot *memory_region_snapshot_and_clear_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size, unsigned client);
+bool memory_region_snapshot_get_dirty(MemoryRegion *mr, DirtyBitmapSnapshot *snap, hwaddr addr, hwaddr size);
+void memory_region_reset_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size, unsigned client);
+
+// Turn a memory region read-only
+// Allows a memory region to be marked as read-only (turning it into a ROM). Only useful on RAM region
+void memory_region_set_readonly(MemoryRegion *mr, bool readonly);
+
+/**
+ * Allows a ROM device to set to ROMD mode or MMIO mode.
+ * When it is in ROMD mode, the device is mapped to guest memory and statisfies read access directly.
+ * When in MMIO mode, reads are forwarded to the @MemoryRegion read function.
+ */
+
+void memory_region_rom_device_set_romd(MemoryRegion *mr, bool romd_mode);
+
+// Enabled writes to a region to be queued for later processing.
+
+void memory_region_set_coalescing(MemoryRegion *mr);
+
+// Enabled memory coalescing for a sub-range of a region
+
+void memory_region_add_coalescing(MemoryRegion *mr, hwaddr offset, uint64_t size);
+void memory_region_clear_coalescing(MemoryRegion *mr);
+
+void memory_region_set_flush_coalesced(MemoryRegion *mr);
+void memory_region_clear_flush_coalesced(MemoryRegion *mr);
+void memory_region_clear_global_locking(MemoryRegion *mr);
+
+/**
+ * Request an eventfd to be triggered when a word is written to a location
+ * Marks a word in an IO region as a trigger for an evenfd event.
+ */
+
+void memory_region_add_eventfd(MemoryRegion *mr, hwaddr addr, unsigned size, bool match_data, uint64_t data, EventNotifier *e);
+void memory_region_del_eventfd(MemoryRegion *mr, hwaddr addr, unsigned size, bool match_data, uint64_t data, EventNotifier *e);
+
+/**
+ * Add a subregion to a container
+ */
+
+void memory_region_add_subregion(MemoryRegion *mr, hwaddr offset, MemoryRegion *subregion);
+
+/**
+ * Add a subregion to a container with overlap
+ * The subregion may overlap with other subregions.
+ * Conflicts are resolved by having a higher @priority hide a lower @prioroty
+ */
+
+void memory_region_add_subregion_overlap(MemoryRegion *mr, hwaddr offset, MemoryRegion *subregion, int priority);
+
+// Get the ram address associated with a memory region
+
+ram_addr_t memory_region_get_ram_addr(MemoryRegion *mr);
+uint64_t memory_region_get_alignment(const MemoryRegion *mr);
+
+void memory_region_del_subregion(MemoryRegion *mr, MemoryRegion *subregion);
+void memory_region_set_enabled(MemoryRegion *mr, bool enabled);
+
+/**
+ * Dynamically updates the address of a region, relative to its container.
+ * May be used on regions are currently part of a memory hierachy.
+ */
+
+void memory_region_set_address(MemoryRegion *mr, hwaddr addr);
+
+// Dynamically updates the size of region
+
+void memory_region_set_size(MemoryRegion *mr, uint64_t size);
+void memory_region_set_alias_offset(MemoryRegion *mr, hwaddr offset);
+
+// check whether an address relative to a @container translates into @MemoryRegion within @container
+
+bool memory_region_present(MemoryRegion *container, hwaddr addr);
+
+// check whether @MemoryRegion is mapped into any address space
+
+bool memory_region_is_mapped(MemoryRegion *mr);
+
+/**
+ * Translate an address/size relative to a MemoryRegion into a @MemoryRegion Section
+ * Locate the first @MemoryRegion within @mr that overlaps the range within by @addr and @size
+ * the @offset_within_address_space is relative to the address space that contains both regions,
+ * the passed and the returned one.
+ */
+
+MemoryRegionSection memory_region_find(MemoryRegion *mr, hwaddr addr, uint64_t size);
+
+// Synchronize the dirty page log for all address space
+
+void memory_global_dirty_log_sync(void);
+
+// During a transaction, changes will be accumulated and made visible only when transaction ends
+
+void memory_region_transaction_begin(void);
+void memory_region_transaction_commit(void);
+
+// register callbacks to be called when memory sections are mapped or unmapped into an address space
+
+void memory_listener_register(MemoryListener *listener, AddressSpace *filter);
+void memory_listener_unregister(MemoryListener *listener);
+void memory_global_dirty_log_start(void);
+void memory_global_dirty_log_stop(void);
+void mtree_info(fprintf_function mon_printf, void *f, bool flatview, bool dispatch_tree, bool owner);
+
+/**
+ * Request a pointer to an mmio MemoryRegion.
+ * If it is possible map a RAM MemoryRegion with this pointer
+ */
+
+bool memory_region_request_mmio_ptr(MemoryRegion *mr, hwaddr addr);
+
+/**
+ * Invalidate the pointer to an mmio previously requested
+ * Means that if something wants to execute from this area it will need to request the pointer again
+ */
+
+void memory_region_invalidate_mmio_ptr(MemoryRegion *mr, hwaddr offset, unsigned size);
+
+// perform a read directly to the specified MemoryRegion
+
+MemTxResult memory_region_dispatch_read(MemoryRegion *mr, hwaddr addr, uint64_t *pval, unsigned size, MemTxAttrs attrs);
+MemTxResult memory_region_dispatch_write(MemoryRegion *mr, hwaddr addr, uint64_t data, unsigned size, MemTxAttrs attrs);
+
+// Address Space
+
+void address_space_init(AddressSpace *as, MemoryRegion *root, const char *name);
+void address_space_destroy(AddressSpace *as);
+MemTxResult address_space_rw(AddressSpace *as, hwaddr addr, MemTxAttrs attrs, uint8_t *buf, int len, bool is_write);
+MemTxResult address_space_write(AddressSpace *as, hwaddr addr, MemTxAttrs attrs, uint8_t *buf, int len);
+
+/**
+ * address_space_id: load from an address space
+ * address_space_st: store to an address space
+ * Perform a load or store of byte, word, long word, quad to the specific address within the AddressSpace
+ */
+
+#define SUFFIX
+#define ARG1    as
+#define ARG1_DECL AddressSpace *as
+#include "exec/memory_ldst.inc.h"
+
+#define SUFFIX
+#define ARG1    as
+#define ARG1_DECL AddressSpace *as
+#include "exec/memory_ldst_phys.inc.h"
+
+typedef struct MemoryRegionCache MemoryRegionCache;
+typedef struct MemoryRegionCache {
+	void *ptr;
+	hwaddr xlat;
+	hwaddr len;
+	FlatView *fv;
+	MemoryRegionSection mrs;
+	bool is_write;
+} MemoryRegionCache;
+
+#define MEMORY_REGION_CACHE_INVALID ((MemoryRegionCache) {.mrs.mr = NULL})
+
+#define SUFFIX _cached_slow
+#define ARG1 cache
+#define ARG1_DECL MemoryRegionCache *cache
+#include "exec/memory_ldst.inc.h"
+
+static inline uint8_t address_ldub_cached(MemoryRegionCache *cache, hwaddr addr, MemTxAttrs attrs, MemTxResult *result) {
+	assert(addr < cache->len);
+	if (likely(cache->ptr))
+	{
+		return ldub_p(cache->ptr + addr);
+	} else {
+		return address_space_ldub_cached_slow(cache,addr,attrs,result);
+	}
+}
+
+static inline void address_space_stb_cached(MemoryRegionCache *cache, hwaddr addr, uint32_t val, MemTxAttrs attrs, MemTxResult *result) {
+	assert(addr < cache->len);
+	if (likely(cache->ptr))
+	{
+		stb_p(cache->ptr + addr, val);
+	} else {
+		address_space_stb_cached_slow(cache, addr, val, attrs, result);
+	}
+}
+
+#define ENDIANNESS _le
+#include "exec/memory_ldst_cached.inc.h"
+
+#define ENDIANNESS _be
+#include "exec/memory_ldst_cached.inc.h"
+
+#define SUFFIX       _cached
+#define ARG1         cache
+#define ARG1_DECL    MemoryRegionCache *cache
+#include "exec/memory_ldst_phys.inc.h"
+
+/**
+ * Prepare for repeated access to a physical memory region
+ * Will only work with RAM and may map a subset of the requested range by returning a value that is less than @len
+ */
+
+int64_t address_space_cache_init(MemoryRegionCache *cache, AddressSpace *as, hwaddr addr, hwaddr len, bool is_write);
+void address_space_cache_invalidate(MemoryRegionCache *cache, hwaddr addr, hwaddr access_len);
+void address_space_cache_destroy(MemoryRegionCache *cache);
+
+// translate an address into a IOTLB
+IOMMUTLBEntry address_space_get_iotlb_entry(AddressSpace *as, hwaddr addr, bool is_write, MemTxAttrs attrs);
+
+// translate an address range into an address space into MemoryRegion and an address range into that section.
+MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat, hwaddr *len, bool is_write, MemTxAttrs attrs);
+static inline MemoryRegion *address_space_translate(AddressSpace *as, hwaddr addr, hwaddr *xlat, hwaddr *len, bool is_write, MemTxAttrs attrs) {
+	return flatview_translate(address_space_to_flatview(as),addr,xlat,len,is_write,attrs);
+}
+
+// Check whether memory is assigned to the given address space range, and access is permitted by any IOMMU regions
+
+bool address_space_accsess_valid(AddressSpace *as, hwaddr addr, int len, bool is_write, MemTxAttrs attrs);
+
+/**
+ * Map a physical memory region into a host virtual address
+ * May map a subset of the requested range
+ */
+
+void *address_space_map(AddressSpace *as, hwaddr addr, hwaddr *plen, bool is_write, MemTxAttrs attrs);
+
+/**
+ * Unmaps a memory region previously mapped by address_space_map()
+ */
+
+void address_space_unmap(AddressSpace *as, void *buffer, hwaddr len, int is_write, hwaddr access_len);
+MemTxResult address_space_read_full(AddressSpace *as, hwaddr addr, MemTxAttrs attrs, uint8_t *buf, int len);
+MemTxResult flatview_read_continue(FlatView *fv, hwaddr addr, MemTxAttrs attrs, uint8_t *buf, int len,
+		                           hwaddr addr1, hwaddr l, MemoryRegion *mr);
+void *qemu_map_ram_ptr(RAMBlock *ram_block, ram_addr_t addr);
+
+void address_space_read_cached_slow(MemoryRegionCache *cache, hwaddr addr, void *buf, int len);
+void address_space_write_cached_slow(MemoryRegionCache *cache, hwaddr addr, void *buf, int len);
+
+static inline bool memory_access_is_direct(MemoryRegion *mr, bool is_write) {
+	if (is_write){
+		return memory_region_is_ram(mr) && !mr->readonly && !memory_region_is_ram_device(mr);
+	} else {
+		return (memory_region_is_ram(mr) && !memory_region_is_ram_device(mr)) || memory_region_is_romd(mr);
+	}
+}
+
+static inline __attribute__((__always_inline__))
+MemTxResult address_space_read(AddressSpace *as, hwaddr addr, MemTxAttrs attrs, uint8_t *buf, int len) {
+	MemTxResult result = MEMTX_OK;
+	hwaddr l, addr1;
+	void *ptr;
+	MemoryRegion *mr;
+	FlatView *fv;
+
+	if (__builtin_constant_p(len)) {
+		if (len) {
+			// rcu_read_lock();
+			fv = address_space_to_flatview(as);
+			l = len;
+			mr = flatview_translate(fv,addr,&addr1,&l,false,attrs);
+			if (len == l && memory_access_is_direct(mr,false))
+			{
+				ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+				memcpy(buf,ptr,len);
+			} else {
+				result = flatview_read_continue(fv, addr, attrs, buf , len, addr1,1,mr);
+			}
+			// rcu_read_unlock();
+		}
+	} else {
+		result = address_space_read_full(as,addr,attrs,buf,len);
+	}
+	return result;
+}
+
+static inline void address_space_read_cached(MemoryRegionCache *cache, hwaddr addr, void *buf, int len) {
+	assert(addr < cache->len && len <= cache->len - addr);
+	if (likely(cache->ptr))
+	{
+		memcpy(buf,cache->ptr + addr, len);
+	} else {
+		address_space_read_cached_slow(cache,addr,buf,len);
+	}
+}
+
+static inline void address_space_write_cached(MemoryRegionCache *cache, hwaddr addr, void *buf, int len) {
+	assert(addr < cache->len && len <= cache->len - addr);
+	if (likely(cache->ptr))
+	{
+		memcpy(cache->ptr + addr,buf, len);
+	} else {
+		address_space_write_cached_slow(cache,addr,buf,len);
+	}
+}
 #endif /* EXEC_MEMORY_H_ */
