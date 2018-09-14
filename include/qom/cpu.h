@@ -278,4 +278,182 @@ static inline hwaddr cpu_get_phys_page_debug(CPUState *cpu, vaddr addr) {
 	return cpu_get_phys_page_attrs_debug(cpu,addr,&attrs);
 }
 
+/**
+ * Return the address space index specifying the CPU AddressSpace
+ * to use for memory access with the given transaction attributes.
+ */
+
+static inline int cpu_asidx_from_attrs(CPUState *cpu, MemTxAttrs attrs) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	int ret = 0;
+	if (cc->asidx_from_attrs) {
+		ret = cc->asidx_from_attrs(cpu,attrs);
+		assert(ret < cpu->num_ases && ret >= 0);
+	}
+	return ret;
+}
+
+void cpu_list_add(CPUState *cpu);
+void cpu_list_remove(CPUState *cpu);
+void cpu_reset(CPUState *cpu);
+
+ObjectClass *cpu_class_by_name(const char *type_name, const char *cpu_moodel);
+CPUState *cpu_create(const char *type_name);
+
+// processes optimal parameters and registers them as global properties
+const char *parse_cpu_model(const char *cpu_model);
+
+// check whether the CPU has work to do
+static inline bool cpu_has_work(CPUState *cpu) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	g_assert(cc->has_work);
+	return cc->has_work(cpu);
+}
+
+// check whether the caller is executing on the vCPU thread
+bool qemu_cpu_is_self(CPUState *cpu);
+void qemu_cpu_kick(CPUState *cpu);
+bool cpu_is_stopped(CPUState *cpu);
+void do_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data, QemuMutex *mutex);
+void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+
+// Schedules the function for execution on the vCPU @cpu asynchronously.
+void async_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+
+// Schedules the function for execution on the vCPU @cpu asynchronously.
+// while all other vCPU are sleeping
+
+void async_safe_run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data);
+
+// Get a CPU matching @index
+CPUState *qemu_get_cpu(int index);
+bool cpu_exists(int64_t id);
+CPUState *cpu_by_arch_id(int64_t id);
+
+/**
+ * Throttle all vcpus by forcing them to sleep for the given percentage of time.
+ * Can be called as needed to adjust new_throttle_pct
+ */
+
+void cpu_throttle_set(int new_throttle_pct);
+void cpu_throttle_stop(void);
+bool cpu_throttle_active(void);
+int cpu_throttle_get_percentage(void);
+typedef void (*CPUInterruptHandler)(CPUState *,int);
+extern CPUInterruptHandler cpu_interrupt_handler;
+static inline void cpu_interrupt(CPUState *cpu, int mask) {
+	cpu_interrupt_handler(cpu,mask);
+}
+void cpu_interrupt(CPUState *cpu, int mask);
+static inline void cpu_unassigned_access(CPUState *cpu, hwaddr addr, bool is_write, bool is_exec, int opaque, unsigned size) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	if (cc->do_unassigned_access) {
+		cc->do_unassigned_access(cpu, addr, is_write, is_exec, opaque, size);
+	}
+}
+
+static inline void cpu_transaction_failed(CPUState *cpu, hwaddr physaddr, vaddr addr, unsigned size, MMUAccessType access_type,
+		                                  int mmu_idx, MemTxAttrs attrs, MemTxResult response, uintptr_t retaddr) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	if (!cpu->ignore_memory_transaction_failtures && cc->do_transaction_failed) {
+		cc->do_transaction_failed(cpu, physaddr,addr,size,access_type,mmu_idx,attrs,response,retaddr);
+	}
+}
+
+// Sets the program counter for a CPU
+static inline void cpu_set_pc(CPUState *cpu, vaddr addr) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	cc->set_pc(cpu,addr);
+}
+
+static inline void cpu_unligned_access(CPUState *cpu, vaddr addr, MMUAccessType access_type, int mmu_idx, uintptr_t retaddr) {
+	CPUClass *cc = CPU_GET_CLASS(cpu);
+	cc->do_unaligned_access(cpu,addr,access_type,mmu_idx,retaddr);
+}
+
+// Reset interrupts on the vCPU
+void cpu_set_reset_interrupt(CPUState *cpu, int mask);
+void cpu_exit(CPUState *cpu);
+void cpu_resume(CPUState *cpu);
+void cpu_remove(CPUState *cpu);
+void cpu_remove_sync(CPUState *cpu);
+void process_queued_cpu_work(CPUState *cpu);
+void cpu_exec_start(CPUState *cpu);
+void cpu_exec_end(CPUState *cpu);
+
+/**
+ * Wait for a concurrent exclusive section to end, and the start
+ * a section of work that is run while other CPUs are not running
+ * CPUs that call cpu_exec_start during the exclusive section go to
+ * sleep until this CPU calls and exclusive
+ */
+
+void start_exclusive(void);
+void end_exclusive(void);
+void qemu_init_vcpu(CPUState *cpu);
+
+#define SSTEP_ENABLE  0x1  /* Enable simulated HW single stepping */
+#define SSTEP_NOIRQ   0x2  /* Do not use IRQ while single stepping */
+#define SSTEP_NOTIMER 0x4 /* Do not Timers while single stepping */
+
+void cpu_single_step(CPUState *cpu, int enabled);
+#define BP_MEM_READ           0x01
+#define BP_MEM_WRITE          0x02
+#define BP_MEM_ACCESS         (BP_MEM_READ | BP_MEM_WRITE)
+#define BP_STOP_BEFORE_ACCESS 0x04
+/* 0x08 currently unused */
+#define BP_GDB                0x10
+#define BP_CPU                0x20
+#define BP_ANY                (BP_GDB | BP_CPU)
+#define BP_WATCHPOINT_HIT_READ 0x40
+#define BP_WATCHPOINT_HIT_WRITE 0x80
+#define BP_WATCHPOINT_HIT (BP_WATCHPOINT_HIT_READ | BP_WATCHPOINT_HIT_WRITE)
+
+int cpu_breakpoint_insert(CPUState *cpu, vaddr pc, int flags,CPUBreakpoint **breakpoint);
+int cpu_breakpoint_remove(CPUState *cpu, vaddr pc, int flags);
+void cpu_breakpoint_remove_by_ref(CPUState *cpu, CPUBreakpoint *breakpoint);
+void cpu_breakpoint_remove_all(CPUState *cpu, int mask);
+
+static inline bool cpu_breakpoint_test(CPUState *cpu, vaddr pc, int mask) {
+	CPUBreakpoint *bp;
+	if (unlikely(!QTAILQ_EMPTY(&cpu->breakpoints))) {
+		QTAILQ_FOREACH(bp, &cpu->breakpoints,entry)  {
+			if (bp->pc == pc && (bp->flags & mask)) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+int cpu_watchpoint_insert(CPUState *cpu, vaddr addr, vaddr len, int flags, CPUWatchpoint **watchpoint);
+int cpu_watchpoint_remove(CPUState *cpu, vaddr addr, vaddr len, int flags);
+void cpu_watchpoint_remove_by_ref(CPUState *cpu, CPUWatchpoint *watchpoint);
+void cpu_watchpoint_remove_all(CPUState *cpu, int mask);
+
+AddressSpace *cpu_get_address_space(CPUState *cpu, const char *fmt, ...) GCC_FMT_ATTR(2,3);
+extern Property cpu_common_props[];
+void cpu_exec_initfn(CPUState *cpu);
+void cpu_exec_realizefn(CPUState *cpu, Error **errp);
+void cpu_exec_unrealizefn(CPUState *cpu);
+
+#ifdef NEED_CPU_H
+
+#ifdef CONFIG_SOFTMMU
+extern const struct VMStateDescription vmstate_cpu_common;
+#else
+#define vmstate_cpu_common vmstate_dummy
+#endif
+
+#define VMSTATE_CPU() {                                                     \
+    .name = "parent_obj",                                                   \
+    .size = sizeof(CPUState),                                               \
+    .vmsd = &vmstate_cpu_common,                                            \
+    .flags = VMS_STRUCT,                                                    \
+    .offset = 0,                                                            \
+}
+
+#endif /* NEED_CPU_H */
+
+#define UNASSIGNED_CPU_INDEX -1
 #endif /* QOM_CPU_H_ */
