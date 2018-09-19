@@ -26,4 +26,30 @@ void bios_linker_loader_write_pointer(BIOSLinker *linker, const char *dest_file,
 		                              uint8_t dst_patched_size, const char *src_file, uint32_t src_offset);
 void bios_linker_loader_cleanup(BIOSLinker *linker);
 
+typedef struct AcpiConfiguration AcpiConfiguration;
+typedef struct AcpiBuildState AcpiBuildState;
+typedef struct AcpiMcfgInfo AcpiMcfgInfo;
+
+typedef struct FirmwareBuildMethods {
+	union {
+		struct {
+			GArray *(*rsdp)(GArray *table_data, BIOSLinker *linker, unsigned rsdt_tbl_offset);
+			GArray *(*madt)(GArray *table_data, BIOSLinker *linker, MachineState *ms, AcpiConfiguration *conf);
+			void (*setup)(MachineState *ms, AcpiConfiguration *conf);
+			void (*mcfg)(GArray *table_data, BIOSLinker *linker, AcpiMcfgInfo *info);
+			void (*srat)(GArray *table_data, BIOSLinker *linker, MachineState *machine, AcpiConfiguration *conf);
+			void (*slit)(GArray *table_data, BIOSLinker *linker);
+		} acpi;
+	};
+} FirmwareBuildMethods;
+
+typedef struct FirmwareBuildState {
+	union {
+		struct {
+			AcpiConfiguration *conf;
+			AcpiConfiguration *state;
+		} acpi;
+	};
+} FirmwareBuildState;
+
 #endif /* HW_FW_BUILD_H_ */
