@@ -33,5 +33,24 @@ typedef struct DriveInfo {
 	QTAILQ_ENTRY(DriveInfo) next;
 } DriveInfo;
 
+DriveInfo *blk_legacy_dinfo(BlockBackend *blk);
+DriveInfo *blk_set_lagacy_dinfo(BlockBackend *blk, DriveInfo *dinfo);
+BlockBackend *blk_by_legacy_dinfo(DriveInfo *dinfo);
+
+void override_max_devs(BlockInterfaceType type, int max_devs);
+
+DriveInfo *drive_get(BlockInterfaceType type, int bus, int unit);
+void drive_check_orphaned(void);
+DriveInfo *drive_get_by_index(BlockInterfaceType type, int index);
+int drive_get_max_bus(BlockInterfaceType type);
+int drive_get_max_devs(BlockInterfaceType type);
+DriveInfo *drive_get_next(BlockInterfaceType type);
+
+QemuOpts *drive_def(const char *optstr);
+QemuOpts *drive_add(BlockInterfaceType type, int index, const char *file, const char *optstr);
+
+DriveInfo *drive_new(QemuOpts *arg, BlockInterfaceType block_default_type);
+void hmp_commit(Monitor *mon, const QDict *qdict);
+void hmp_drive_del(Monitor *mon, const QDict *qdict);
 
 #endif /* SYSEMU_BLOCKDEV_H_ */
