@@ -755,3 +755,285 @@ static void start_tcg_kick_timer(void) {
 		timer_mod(tcg_kick_vcpu_timer, qemu_tcg_next_kick());
 	}
 }
+
+static void stop_tcg_kick_timer(void) {
+	assert(!mttcg_enabled);
+	if (tcg_kick_vcpu_timer)
+	{
+		timer_del(tcg_kick_vcpu_timer);
+		tcg_kick_vcpu_timer = NULL;
+	}
+}
+
+
+////////////////////////////////////////////////////////////////////////////////////////
+
+void hw_error(const char *fmt, ...) {
+	va_list ap;
+	CPUState *cpu;
+
+	va_start(ap,fmt);
+	fprintf(stderr, "qemu: hardware error: ");
+	vfprintf(stderr, fmt, ap);
+	fprintf(stderr, "\n");
+	CPU_FOREACH(cpu) {
+		fprintf(stderr, "CPU #%d:\n", cpu->cpu_index);
+		cpu_dump_state(cpu, stderr, fprintf, CPU_DUMP_FPU);
+	}
+
+	va_end(ap);
+	abort();
+}
+
+void cpu_sychronize_all_states(void) {
+	CPUState *cpu;
+	CPU_FOREACH(cpu) {
+		cpu_synchronize_state(cpu);
+		if (hvf_enabled())
+		{
+			hvf_cpu_synchronize_state(cpu);
+		}
+	}
+}
+
+void cpu_synchronize_all_post_reset(void) {
+	CPUState *cpu;
+	CPU_FOREACH(cpu) {
+		cpu_synchronize_post_reset(cpu);
+		if (hvf_enabled()) {
+			hvf_cpu_synchronize_post_reset(cpu);
+		}
+	}
+}
+
+void cpu_synchronize_all_post_init(void) {
+	CPUState *cpu;
+	CPU_FOREACH(cpu) {
+	    cpu_synchronize_post_init(cpu);
+		if (hvf_enabled()) {
+			hvf_cpu_synchronize_post_init(cpu);
+		}
+	}
+}
+
+void cpu_synchronize_all_pre_loadvm(void) {
+	CPUState *cpu;
+	CPU_FOREACH(cpu) {
+		cpu_synchronize_pre_loadvm(cpu);
+	}
+}
+
+static int do_vm_stop(RunState state, bool send_stop) {
+	int ret = 0;
+	if (runstate_is_running())
+	{
+		cpu_disable_ticks();
+		pause_all_vcpus();
+		runstate_set(state);
+		vm_state_notify(0, state);
+		if (send_stop) {
+			qapi_event_send_stop(&error_abort);
+		}
+	}
+
+	bdrv_drain_all();
+	replay_diable_events();
+	ret = bdrv_flush_all();
+	return ret;
+}
+
+// Special vm_stop() variant for terminating the process
+
+int vm_shutdown(void) {
+	return do_vm_stop(RUN_STATE_SHUTDOWN, false);
+}
+
+static bool cpu_can_run(CPUState *cpu) {
+	if (cpu->stop) {
+		return false;
+	}
+
+	if (cpu_is_stopped(cpu)) {
+		return false;
+	}
+
+	return true;
+}
+
+static void cpu_handle_guest_debug(CPUState *cpu) {
+	gdb_set_stop_cpu(cpu);
+	qemu_system_debug_request();
+	cpu->stopped = true;
+}
+
+#ifdef CONFIG_LINUX
+
+static void sigbus_reraise(void) {
+	sigset_t set;
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_handler = SIG_DFL;
+	if (!sigaction(SIGBUS, &action, NULL)) {
+		raise(SIGBUS);
+		sigemptyset(&set);
+		sigaddset(&set, SIGBUS);
+		pthread_sigmask(SIG_UNBLOCK, &set, NULL);
+	}
+	perror("Failed to re-raise SIGBUS!\n");
+	abort();
+}
+
+static void sigbus_handler(int n, siginfo_t *siginfo, void *ctx) {
+	if (siginfo->si_code != BUS_MCEERR_AO && siginfo->si_code != BUS_MCEERR_AR) {
+		sigbus_reraise();
+	}
+
+	if (current_cpu)
+	{
+		// Called asynchronously in VCPU thread
+		if (kvm_on_sigbus_vcpus(current_cpu, siginfo->si_code, siginfo->si_addr))
+		{
+			sigbus_reraise();
+		}
+	}
+	else
+	{
+		// Called synchronously via signaIfd in main thread
+		if (kvm_on_sigbus(siginfo->si_code, siginfo->si_addr))
+		{
+			sigbus_reraise();
+		}
+	}
+}
+
+static void qemu_init_sigbus(void) {
+	struct sigaction action;
+	memset(&action, 0, sizeof(action));
+	action.sa_flags = SA_SIGINFO;
+	action.sa_sigaction = sigbus_handler;
+	signation(SIGBUS, &action, NULL);
+	prctl(PR_MCE_KILL, PR_MCE_KILL_SET, PR_MCE_KILL_EARLY, 0, 0);
+}
+
+#else
+static void qemu_init_sigbus(void) {}
+#endif
+
+static QemuMutex qemu_global_mutex;
+static QemuThread io_thread;
+
+// CPU creation
+static QemuMutex qemu_cpu_cond;
+static QemuCond qemu_pause_cond;
+
+void qemu_init_cpu_loop(void) {
+	qemu_init_sigbus();
+	qemu_cond_init(&qemu_cpu_cond);
+	qemu_cond_init(&qemu_pause_cond);
+	qemu_mutex_init(&qemu_global_mutex);
+	qemu_thread_get_self(&io_thread);
+}
+
+void run_on_cpu(CPUState *cpu, run_on_cpu_func func, run_on_cpu_data data) {
+	do_run_on_cpu(cpu, func, data, &qemu_global_mutex);
+}
+
+static void qemu_kvm_destroy_vcpu(CPUState *cpu) {
+	if (kvm_destroy_vcpu(cpu) < 0)
+	{
+		error_report("kvm_destroy_vcpu failed");
+		exit(EXIT_FAILURE);
+	}
+}
+
+static void qemu_tcg_destroy_vcpu(CPUState *cpu) {}
+
+static void qemu_cpu_stop(CPUState *cpu, bool exit) {
+	g_assert(qemu_cpu_is_self(cpu));
+	cpu->stop = false;
+	cpu->stopped = true;
+	if (exit)
+	{
+		cpu_exit(cpu);
+	}
+	qemu_cond_broadcast(&qemu_pause_cond);
+}
+
+static void qemu_wait_event_common(CPUState *cpu) {
+	atomic_mb_set(&cpu->thread_kicked, false);
+	if (cpu->stop)
+	{
+		qemu_cpu_stop(cpu,false);
+	}
+	process_queued_cpu_work(cpu);
+}
+
+static void qemu_tcg_rr_wait_io_event(CPUState *cpu) {
+	while (all_cpu_threads_idle())
+	{
+		stop_tcg_kick_timer();
+		qemu_cond_wait(cpu->halt_cond, &qemu_global_mutex);
+	}
+	start_tcg_kick_timer();
+	qemu_wait_io_event_common(cpu);
+}
+
+static void qemu_wait_io_event(CPUState *cpu) {
+	while (cpu_thread_is_idle(cpu))
+	{
+		qemu_cond_wait(cpu->halt_cond, &qemu_global_mutex);
+	}
+#ifdef _WIN32
+	// Eat dummy APC queued by qemu_cpu_kick_thread
+	if (!tcg_enabled())
+	{
+		SleepEx(0,true);
+	}
+#endif
+	qemu_wait_io_event_common(cpu);
+
+}
+
+static void *qemu_kvm_cpu_thread_fn(void *arg) {
+	CPUState *cpu = arg;
+	int r;
+	rcu_register_thread();
+	qemu_mutex_lock_iothread();
+	qemu_thread_get_self(cpu->thread);
+	cpu->thread_id = qemu_get_thread_id();
+	cpu->can_do_io = 1;
+	current_cpu = cpu;
+
+	r = kvm_init_vcpu(cpu);
+	if (r < 0)
+	{
+		error_report("kvm_init_vcpu failed: %s", strerror(-r));
+		exit(1);
+	}
+
+	kvm_init_cpu_signals(cpu);
+
+	// signal CPU creation
+	cpu->created = true;
+	qemu_cond_signal(&qemu_cpu_cond);
+
+	do {
+		if (cpu_can_run(cpu))
+		{
+			r = kvm_cpu_exec(cpu);
+			if (r == EXCP_DEBUG)
+			{
+				cpu_handle_guest_debug(cpu);
+			}
+		}
+		qemu_wait_io_event(cpu);
+	} while (!cpu->unplug || cpu_can_run(cpu));
+
+	qemu_kvm_destroy_vcpu(cpu);
+	cpu->created = false;
+	qemu_cond_signal(&qemu_cpu_cond);
+	qemu_mutex_unlock_iothread();
+	rcu_unregister_thread();
+	return NULL;
+}
+
