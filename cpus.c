@@ -525,3 +525,233 @@ void qemu_start_warp_timer(void) {
 		qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
 	}
 }
+
+static void qemu_account_warp_timer(void) {
+	if (!use_icount || !icount_sleep) {
+		return;
+	}
+
+	if (!runstate_is_running()) {
+		return;
+	}
+
+	// warp clock deterministically in record/replay mode
+    if (!replay_checkpoint(CHECKPOINT_CLOCK_WARP_START)) {
+		return;
+	}
+
+    timer_del(timers_state.icount_warp_timer);
+    icount_warp_rt();
+}
+
+static bool icount_state_needed(void *opaque) {
+	return use_icount;
+}
+
+static bool warp_timer_state_needed(void *opaque) {
+	TimersState *s = opaque;
+	return s->icount_warp_timer != NULL;
+}
+
+static bool adjust_timers_state_needed(void *opaque) {
+	TimersState *s = opaque;
+	return s->icount_rt_timer != NULL;
+}
+
+static void cpu_throttle_thread(CPUState *cpu, run_on_cpu_data opaque) {
+	double pct;
+	double throttle_ratio;
+	long sleeptime_ns;
+
+	if (!cpu_throttle_get_percentage()) {
+		return;
+	}
+
+	pct = (double)cpu_throttle_get_percentage()/100;
+	throttle_ratio = pct/(1-pct);
+	sleeptime_ns = (long)(throttle_ratio * CPU_THROTTLE_TIMESLICE_NS);
+
+	qemu_mutex_unlock_iothread();
+	g_usleep(sleeptime_ns/1000);
+	qemu_mutex_lock_iothread();
+	atomic_set(&cpu->throttle_thread_sheduled, 0);
+}
+
+static void cpu_throttle_timer_tick(void *opaque) {
+	CPUState *cpu;
+	double pct;
+
+	// Stop timer if needed
+	if (!cpu_throttle_get_percentage()) {
+		return;
+	}
+
+	CPU_FOREACH(cpu) {
+		if (!atomic_xchg(&cpu->throttle_thread_scheduled,1)) {
+			async_run_on_cpu(cpu, cpu_throttle_thread, RUN_ON_CPU_NULL);
+		}
+	}
+
+	pct = (double)cpu_throttle_get_percentage()/100;
+	timer_mod(throttle_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) +
+			  CPU_THROTTLE_TIMESLICE_NS / (1-pct));
+}
+
+void cpu_throttle_set(int new_throttle_pct) {
+
+	// Ensure throttle percentage is within valid range
+	new_throttle_pct = MIN(new_throttle_pct,CPU_THROTTLE_PCT_MAX);
+	new_throttle_pct = MAX(new_throttle_pct,CPU_THROTTLE_PCT_MIN);
+
+	atomic_set(&throttle_percentage,new_throttle_pct);
+	timer_mod(throttle_timer, qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT) +
+			  CPU_THROTTLE_TIMESLICE_NS);
+}
+
+void cpu_throttle_stop(void) {
+	atomic_set(&throttle_percentage,0);
+}
+
+bool cpu_throttle_active(void) {
+	return (cpu_throttle_get_percentage() != 0);
+}
+
+int cpu_throttle_get_percentage(void) {
+	return atomic_read(&throttle_percentage);
+}
+
+void cpu_ticks_init(void) {
+	seqlock_init(&timers_state.vm_clock_seqlock);
+	vmstate_register(NULL, 0, &vmstate_timers, &timers_state);
+	throttle_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,
+			                      cpu_throttle_timer_tick, NULL);
+}
+
+void configure_icount(QemuOpts *opts, Error **errp) {
+	const char *option;
+	char *rem_str = NULL;
+
+	option = qemu_opt_get(opts, "shift");
+	if (!option) {
+		if (qemu_opt_get(opts, "align") != NULL)
+		{
+			error_setg(errp, "Please specify shift option when using align");
+		}
+		return;
+	}
+
+	icount_sleep = qemu_opt_get_bool(opts, "sleep", true);
+	if (icount_sleep)
+	{
+		timers_state.icount_warp_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL_RT,icount_timer_cb,NULL);
+	}
+
+	icount_align_option = qemu_opt_get_bool(opts,"align",false);
+
+	if (icount_align_option && !icount_sleep) {
+		error_setg(errp, "align=on and sleep=off are incompatible");
+	}
+
+	if (strcmp(option,"auto") != 0) {
+		errno = 0;
+		icount_time_shift = strol(option, &rem_str,0);
+		if (errno != 0 || *rem_str != '\0' || !strlen(option)) {
+			error_setg(errp, "icount: Invalid shift value");
+		}
+		use_icount = 1;
+		return;
+	} else if (icount_align_option) {
+		error_setg(errp, "shift=auto and align=on are incompatible");
+	} else if (!icount_sleep) {
+		error_setg(errp, "shift=auto and sleep=off are incompatible");
+	}
+
+	use_icount = 2;
+	icount_time_shift = 3;
+
+	/*
+	 * Have both real time and virtual time triggers for speed adjustment
+	 * The real time trigger catches emulated time passing too slowly,
+	 * The virtual time trigger catches emulated time passing too fast
+	 */
+
+	timers_state.vm_clock_warp_start = -1;
+	timers_state.icount_rt_timer = timer_new_ms(QEMU_CLOCK_VIRTUAL_RT,
+			                                    icount_adjust_rt, NULL);
+	timer_mod(timers_state.icount_rt_timer,
+			  qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL_RT) + 1000);
+	timers_state.icount_vm_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,
+			                                    icount_adjust_vm,NULL);
+	timer_mod(timers_state.icount_vm_timer,
+			  qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) +
+			  NANOSECONDS_PER_SECOND / 10);
+}
+
+
+/**
+ * The kick timer is responsible for moving single thread vCPU
+ * emulation on to the next vCPU.
+ * If more than on vCPU is running a timer event with force a cpu->exit
+ * so the next vCPU can get scheduled
+ */
+
+static QEMUTimer *tcg_kick_vcpu_timer;
+static CPUState *tcg_current_rr_cpu;
+
+#define TCG_KICK_PERID (NANOSECONDS_PER_SECOND / 10)
+
+static inline int64_t qemu_tcg_next_kick(void) {
+	return qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL) + TCG_KICK_PERIOD;
+}
+
+static void qemu_cpu_kick_rr_cpu(void) {
+	CPUState *cpu;
+	do {
+		cpu = atomic_mb_read(&tcg_current_rr_cpu);
+		if (cpu) {
+			cpu_exit(cpu);
+		}
+	} while (cpu != atomic_mb_read(&tcg_current_rr_cpu));
+}
+
+static void do_nothing(CPUState *cpu, run_on_cpu_data unused)
+{
+}
+
+void qemu_timer_notify_cb(void *opaque, QEMUClockType type) {
+	if (!use_icount || type != QEMU_CLOCK_VIRTUAL)
+	{
+		qemu_notify_event();
+		return;
+	}
+
+	if (qemu_in_vcpu_thread())
+	{
+		/*
+		 * A CPU is currently running
+		 * -> kick it back out to the tcg_cpu_exec() loop
+		 * -> so it will recalculate its icount deadline immediately
+		 */
+		qemu_cpu_kick(current_cpu);
+	} else if (first_cpu) {
+		/*
+		 * qemu_cpu_kick is not enough to kick a halted CPU out of qemu_tcg_wait_io_event
+		 * -> aync_run_on_cpu cause cpu_thread_is_idle to return false
+		 */
+		async_run_on_cpu(first_cpu, do_nothing, RUN_ON_CPU_NULL);
+	}
+}
+
+static void kick_tcg_thread(void *opaque) {
+	timer_mod(tcg_kick_vcpu_timer, qemu_tcg_next_kick());
+	qemu_cpu_kick_rr_cpu();
+}
+
+static void start_tcg_kick_timer(void) {
+	assert(!mttcg_enabled);
+	if (!tcg_kick_vcpu_timer && CPU_NEXT(first_cpu))
+	{
+		tcg_kick_vcpu_timer = timer_new_ns(QEMU_CLOCK_VIRTUAL,kick_tcg_thread,NULL);
+		timer_mod(tcg_kick_vcpu_timer, qemu_tcg_next_kick());
+	}
+}
