@@ -2,7 +2,7 @@
  * qemu-common.h
  *
  *  Created on: Aug 16, 2018
- *      Author: tungdang
+ *      Student (Intel Virtual Coder): Tung Dang
  */
 
 #ifndef QEMU_COMMON_H_
