@@ -2,7 +2,7 @@
  * cpus.c
  *
  *  Created on: Sep 18, 2018
- *      Student (Intel Virtual Coder): Tung Dang
+ *      Student (MIG Virtual Coder): Tung Dang
  */
 
 #include "qemu/osdep.h"
