@@ -1636,3 +1636,445 @@ static void qemu_tcg_init_vcpu(CPUState *cpu) {
 		cpu->created = true;
 	}
 }
+
+static void qemu_hax_start_vcpu(CPUState *cpu) {
+	char thread_name[VCPU_THREAD_NAME_SIZE];
+	cpu->thread = g_malloc0(sizeof(QemuThread));
+	cpu->halt_cond = g_malloc0(sizeof(QemuThread));
+	qemu_cond_init(cpu->halt_cond);
+	snprinftf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/HAX", cpu->cpu_index);
+	qemu_thread_create(cpu->thread, thread_name, qemu_hax_cpu_thread_fn, cpu, QEMU_THREAD_JOINABLE);
+}
+
+static void qemu_kvm_start_vcpu(CPUState *cpu) {
+	char thread_name[VCPU_THREAD_NAME_SIZE];
+	cpu->thread = g_malloc0(sizeof(QemuThread));
+	cpu->halt_cond = g_malloc0(sizeof(QemuThread));
+	qemu_cond_init(cpu->halt_cond);
+	snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/KVM", cpu->cpu_index);
+
+}
+
+static void qemu_hvf_start_vcpu(CPUState *cpu) {
+	char thread_name[VCPU_THREAD_NAME_SIZE];
+	assert(hvf_enabled());
+
+	cpu->thread = g_malloc0(sizeof(QemuThread));
+	cpu->halt_cond = g_malloc0(sizeof(QemuCond));
+	qemu_cond_init(cpu->halt_cond);
+
+	snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/HVF", cpu->cpu_index);
+	qemu_thread_create(cpu->thread, thread_name, qemu_hvf_cpu_thread_fn,
+			           cpu, QEMU_THREAD_JOINABLE);
+}
+
+static void qemu_whpx_start_vcpu(CPUState *cpu) {
+	char thread_name[VCPU_THREAD_NAME_SIZE];
+
+	cpu->thread = g_malloc0(sizeof(QemuThread));
+	cpu->halt_cond = g_malloc0(sizeof(QemuCond));
+	qemu_cond_init(cpu->halt_cond);
+
+	snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/WHPX", cpu->cpu_index);
+	qemu_thread_create(cpu->thread, thread_name, qemu_whpx_cpu_thread_fn,
+				       cpu, QEMU_THREAD_JOINABLE);
+}
+
+static void qemu_dummy_start_vcpu(CPUState *cpu) {
+	char thread_name[VCPU_THREAD_NAME_SIZE];
+
+	cpu->thread = g_malloc0(sizeof(QemuThread));
+	cpu->halt_cond = g_malloc0(sizeof(QemuCond));
+	qemu_cond_init(cpu->halt_cond);
+	snprintf(thread_name, VCPU_THREAD_NAME_SIZE, "CPU %d/DUMMY", cpu->cpu_index);
+	qemu_thread_create(cpu->thread, thread_name, qemu_dummy_cpu_thread_fn,
+					   cpu, QEMU_THREAD_JOINABLE);
+}
+
+void qemu_init_vcpu(CPUState *cpu) {
+	cpu->nr_cores = smp_cores;
+	cpu->nr_threads = smp_threads;
+	cpu->stopped = true;
+
+	if (!cpu->as)
+	{
+		cpu->num_ases = 1;
+		cpu_address_space_init(cpu, 0, "cpu-memory", cpu->memory);
+	}
+
+	if (kvm_enabled())
+	{
+		qemu_kvm_start_vcpu(cpu);
+	}
+	else if (hax_enabled())
+	{
+		qemu_hax_start_vcpu(cpu);
+	}
+	else if (hvf_enabled())
+	{
+		qemu_hvf_start_vcpu(cpu);
+	}
+	else if (tcg_enabled())
+	{
+		qemu_tcg_init_vcpu(cpu);
+	}
+	else if (whpx_enabled())
+	{
+		qemu_whpx_start_vcpu(cpu);
+	}
+	else
+	{
+		qemu_dummy_start_vcpu(cpu);
+	}
+
+	while (!cpu->created)
+	{
+		qemu_cond_wait(&qemu_cpu_cond, &qemu_global_mutex);
+	}
+}
+
+void cpu_stop_current(void) {
+	if (current_cpu)
+	{
+		qemu_cpu_stop(current_cpu, true);
+	}
+}
+
+int vm_stop(RunState state) {
+	if (qemu_in_vcpu_thread())
+	{
+		qemu_system_vmstop_request_prepare();
+		qemu_system_vmstop_request(state);
+
+		cpu_stop_current();
+		return 0;
+	}
+	return do_vm_stop(state,true);
+}
+
+int vm_prepare_start(void) {
+	RunState requested;
+	qemu_vmstop_requested(&requested);
+	if (runstate_is_running() && requested == RUN_STATE__MAX)
+	{
+		return -1;
+	}
+
+	/*
+	 * Ensure that a STOP/RESUME pair of events is emitted if a
+	 * vmstop request was pending.
+	 */
+
+	if (run_state_is_running())
+	{
+		qapi_event_send_stop(&error_abort);
+		qapi_event_send_resume(&error_abort);
+		return -1;
+	}
+
+	qapi_event_send_resume(&error_abort);
+	replay_enabled_events();
+	runstate_set(RUN_STATE_RUNNING);
+	vm_state_notify(1,RUN_STATE_RUNNING);
+	return 0;
+}
+
+void vm_start(void) {
+	if (!vm_prepare_start())
+	{
+		resume_all_vcpus();
+	}
+}
+
+int vm_stop_force_state(RunState state) {
+	if (runstate_is_running())
+	{
+		return vm_stop(state);
+	}
+	else
+	{
+		runstate_set(state);
+		bdrv_drain_all();
+		return bdrv_flush_all();
+	}
+}
+
+void list_cpus(FILE *f, fprintf_function cpu_fprintf, const char *optarg) {
+#if defined(cpu_list)
+    cpu_list(f, cpu_fprintf);
+#endif
+}
+
+CpuInfoList *qmp_query_cpus(Error **errp) {
+	MachineState *ms = MACHINE(qdev_get_machine());
+	MachineState *mc = MACHINE_GET_CLASS(ms);
+	CpuInfoList *head = NULL, *cur_item = NULL;
+	CPUState *cpu;
+
+	CPU_FOREACH(cpu) {
+	        CpuInfoList *info;
+	#if defined(TARGET_I386)
+	        X86CPU *x86_cpu = X86_CPU(cpu);
+	        CPUX86State *env = &x86_cpu->env;
+	#elif defined(TARGET_PPC)
+	        PowerPCCPU *ppc_cpu = POWERPC_CPU(cpu);
+	        CPUPPCState *env = &ppc_cpu->env;
+	#elif defined(TARGET_SPARC)
+	        SPARCCPU *sparc_cpu = SPARC_CPU(cpu);
+	        CPUSPARCState *env = &sparc_cpu->env;
+	#elif defined(TARGET_RISCV)
+	        RISCVCPU *riscv_cpu = RISCV_CPU(cpu);
+	        CPURISCVState *env = &riscv_cpu->env;
+	#elif defined(TARGET_MIPS)
+	        MIPSCPU *mips_cpu = MIPS_CPU(cpu);
+	        CPUMIPSState *env = &mips_cpu->env;
+	#elif defined(TARGET_TRICORE)
+	        TriCoreCPU *tricore_cpu = TRICORE_CPU(cpu);
+	        CPUTriCoreState *env = &tricore_cpu->env;
+	#elif defined(TARGET_S390X)
+	        S390CPU *s390_cpu = S390_CPU(cpu);
+	        CPUS390XState *env = &s390_cpu->env;
+	#endif
+
+	        cpu_synchronize_state(cpu);
+
+	        info = g_malloc0(sizeof(*info));
+	        info->value = g_malloc0(sizeof(*info->value));
+	        info->value->CPU = cpu->cpu_index;
+	        info->value->current = (cpu == first_cpu);
+	        info->value->halted = cpu->halted;
+	        info->value->qom_path = object_get_canonical_path(OBJECT(cpu));
+	        info->value->thread_id = cpu->thread_id;
+	#if defined(TARGET_I386)
+	        info->value->arch = CPU_INFO_ARCH_X86;
+	        info->value->u.x86.pc = env->eip + env->segs[R_CS].base;
+	#elif defined(TARGET_PPC)
+	        info->value->arch = CPU_INFO_ARCH_PPC;
+	        info->value->u.ppc.nip = env->nip;
+	#elif defined(TARGET_SPARC)
+	        info->value->arch = CPU_INFO_ARCH_SPARC;
+	        info->value->u.q_sparc.pc = env->pc;
+	        info->value->u.q_sparc.npc = env->npc;
+	#elif defined(TARGET_MIPS)
+	        info->value->arch = CPU_INFO_ARCH_MIPS;
+	        info->value->u.q_mips.PC = env->active_tc.PC;
+	#elif defined(TARGET_TRICORE)
+	        info->value->arch = CPU_INFO_ARCH_TRICORE;
+	        info->value->u.tricore.PC = env->PC;
+	#elif defined(TARGET_S390X)
+	        info->value->arch = CPU_INFO_ARCH_S390;
+	        info->value->u.s390.cpu_state = env->cpu_state;
+	#elif defined(TARGET_RISCV)
+	        info->value->arch = CPU_INFO_ARCH_RISCV;
+	        info->value->u.riscv.pc = env->pc;
+	#else
+	        info->value->arch = CPU_INFO_ARCH_OTHER;
+	#endif
+	        info->value->has_props = !!mc->cpu_index_to_instance_props;
+	        if (info->value->has_props) {
+	            CpuInstanceProperties *props;
+	            props = g_malloc0(sizeof(*props));
+	            *props = mc->cpu_index_to_instance_props(ms, cpu->cpu_index);
+	            info->value->props = props;
+	        }
+
+	        /* XXX: waiting for the qapi to support GSList */
+	        if (!cur_item) {
+	            head = cur_item = info;
+	        } else {
+	            cur_item->next = info;
+	            cur_item = info;
+	        }
+	}
+
+	return head;
+}
+
+static CpuInfoArch sysemu_target_to_cpuinfo_arch(SysEmuTarget target) {
+	    switch (target) {
+	    case SYS_EMU_TARGET_I386:
+	    case SYS_EMU_TARGET_X86_64:
+	        return CPU_INFO_ARCH_X86;
+
+	    case SYS_EMU_TARGET_PPC:
+	    case SYS_EMU_TARGET_PPCEMB:
+	    case SYS_EMU_TARGET_PPC64:
+	        return CPU_INFO_ARCH_PPC;
+
+	    case SYS_EMU_TARGET_SPARC:
+	    case SYS_EMU_TARGET_SPARC64:
+	        return CPU_INFO_ARCH_SPARC;
+
+	    case SYS_EMU_TARGET_MIPS:
+	    case SYS_EMU_TARGET_MIPSEL:
+	    case SYS_EMU_TARGET_MIPS64:
+	    case SYS_EMU_TARGET_MIPS64EL:
+	        return CPU_INFO_ARCH_MIPS;
+
+	    case SYS_EMU_TARGET_TRICORE:
+	        return CPU_INFO_ARCH_TRICORE;
+
+	    case SYS_EMU_TARGET_S390X:
+	        return CPU_INFO_ARCH_S390;
+
+	    case SYS_EMU_TARGET_RISCV32:
+	    case SYS_EMU_TARGET_RISCV64:
+	        return CPU_INFO_ARCH_RISCV;
+
+	    default:
+	        return CPU_INFO_ARCH_OTHER;
+	    }
+}
+
+static void cpustate_to_cpuinfo_s390(CpuInfoS390 *info, const CPUState *cpu) {
+#ifdef TARGET_S390X
+    S390CPU *s390_cpu = S390_CPU(cpu);
+    CPUS390XState *env = &s390_cpu->env;
+
+    info->cpu_state = env->cpu_state;
+#else
+    abort();
+#endif
+}
+
+CpuInfoFastList *qmp_query_cpus_fast(Error **errp) {
+	MachineState *ms = MACHINE(qdev_get_machine());
+	MachineClass *mc = MACHINE_GET_CLASS(ms);
+	CpuInfoFastList *head = NULL, *cur_item = NULL;
+	SysEmuTarget target = qapi_enum_parse(&SysEmuTarget_lookup, TARGET_NAME,
+			                              -1, &error_abort);
+	CPUState *cpu;
+
+	CpuInfoFastList *info = g_malloc0(sizeof(*info));
+	info->value = g_malloc0(sizeof(*info->value));
+	info->value->cpu_index = cpu->cpu_index;
+	info->value->thread_id = cpu->thread_id;
+	info->value->has_props = !!mc->cpu_index_to_instance_props;
+	if (info->value->has_props)
+	{
+		CpuInstanceProperties *props;
+		props = g_malloc0(sizeof(*props));
+		*props = mc->cpu_index_to_instance_props(ms,cpu->cpu_index);
+		info->value->props = props;
+	}
+
+	info->value->arch = sysemu_target_to_cpuinfo_arch(target);
+	info->value->target = target;
+	if (target == SYS_EMU_TARGET_S390X) {
+		cpustate_to_cpuinfo_s390(&info->value->u.s390x,cpu);
+	}
+
+	if (!cur_item) {
+		head = cur_item = info;
+	} else {
+		cur_item->next = info;
+		cur_item = info;
+	}
+
+	return head;
+}
+
+void qmp_memsave(int64_t addr, int64_t size, const char *filename,
+		         bool has_cpu, int64_t cpu_index, Error **errp) {
+	FILE *f;
+	uint32_t l;
+	CPUState *cpu;
+	uint8_t buf[1024];
+	int64_t orig_addr = addr, orig_size = size;
+
+	if (!has_cpu)
+	{
+		cpu_index = 0;
+	}
+
+	cpu = qemu_get_cpu(cpu_index);
+	if (cpu == NULL)
+	{
+		error_setg(errp, QERR_INVALID_PARAMETER_VALUE, "cpu-index", "a CPU number");
+		return;
+	}
+
+	f = fopen(filename, "wb");
+	if (!f)
+	{
+		error_setg_file_open(errp, errno, filename);
+		return;
+	}
+
+	while (size != 0)
+	{
+		l = sizeof(buf);
+		if (l > size)
+		{
+			l = size;
+		}
+		if (cpu_memory_rw_debug(cpu, addr, buf, l, 0) != 0)
+		{
+			error_setg(errp, "Invalid addr 0x016" PRIx64 "/size %" PRId64
+					   "specified", orig_addr, orig_size);
+			goto exit;
+		}
+		if (fwrite(buf, 1, l, f) != l)
+		{
+			error_setg(errp, QERR_IO_ERROR);
+			goto exit;
+		}
+		addr += l;
+		size -= l;
+	}
+	exit:
+	fclose(f);
+}
+
+
+void qmp_pmemsave(int64_t addr, int64_t size, const char *filename, Error **errp) {
+	FILE *f;
+	uint32_t l;
+	uint8_t buf[1024];
+
+	f = fopen(filename, "wb");
+	if (!f) {
+		error_setg_file_open(errp, errno, filename);
+		return;
+	}
+
+	while (size != 0) {
+		l = sizeof(buf);
+		if (l > size)
+		{
+			l = size;
+		}
+		cpu_physical_memory_read(addr, buf, l);
+		if (fwrite(buf, 1, l, f) != l)
+		{
+			error_setg(errp, QERR_IO_ERROR);
+			goto exit;
+		}
+		addr += l;
+		size -= l;
+	}
+	exit:
+	fclose();
+}
+
+void qmp_inject_nmi(Error **errp)
+{
+    nmi_monitor_handle(monitor_get_cpu_index(), errp);
+}
+
+void dump_drift_info(FILE *f, fprintf_function cpu_fprintf)
+{
+    if (!use_icount) {
+        return;
+    }
+
+    cpu_fprintf(f, "Host - Guest clock  %"PRIi64" ms\n",
+                (cpu_get_clock() - cpu_get_icount())/SCALE_MS);
+    if (icount_align_option) {
+        cpu_fprintf(f, "Max guest delay     %"PRIi64" ms\n", -max_delay/SCALE_MS);
+        cpu_fprintf(f, "Max guest advance   %"PRIi64" ms\n", max_advance/SCALE_MS);
+    } else {
+        cpu_fprintf(f, "Max guest delay     NA\n");
+        cpu_fprintf(f, "Max guest advance   NA\n");
+    }
+}
