@@ -9,6 +9,10 @@
 #define EXEC_RAMLIST_H_
 #include "qemu/typedefs.h"
 #include "qemu/osdep.h"
+#include "qemu/queue.h"
+#include "qemu/thread.h"
+#include "qemu/rcu.h"
+#include "qemu/rcu_queue.h"
 
 typedef struct RAMBlockNotifier RAMBlockNotifier;
 
