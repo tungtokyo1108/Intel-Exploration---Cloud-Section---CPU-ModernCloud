@@ -103,7 +103,7 @@ typedef struct MemoryRegionOps {
 	// Write to the memory region.
 	void (*write)(void *opaque, hwaddr addr, uint64_t data, unsigned size);
 	MemTxResult(*read_with_attrs)(void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs);
-	MemTxResult(*wrote_with_attrs)(void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs);
+	MemTxResult(*write_with_attrs)(void *opaque, hwaddr addr, uint64_t *data, unsigned size, MemTxAttrs attrs);
 
 	// Return a pointer to a location with contains guest code
 	void *(*request_ptr)(void *opaque, hwaddr addr, unsigned *size, unsigned *offset);
