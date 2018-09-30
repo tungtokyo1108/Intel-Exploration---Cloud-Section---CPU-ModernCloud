@@ -521,3 +521,350 @@ static MemTxResult memory_region_write_with_attrs_accessor
 	return mr->ops->write_with_attrs(mr->opaque, addr, tmp, size, attrs);
 }
 
+static MemTxResult access_with_adjusted_size
+(hwaddr addr, uint64_t *value, unsigned size, unsigned access_size_min, unsigned access_size_max,
+ MemTxResult (*access_fn)(MemoryRegion *mr, hwaddr addr, uint64_t *value, unsigned size, unsigned shift,
+		 uint64_t mask, MemTxAttrs attrs), MemoryRegion *mr, MemTxAttrs attrs) {
+	uint64_t access_mask;
+	unsigned access_size;
+	unsigned i;
+	MemTxResult r = MEMTX_OK;
+
+	if (!access_size_min)
+	{
+		access_size_min = 1;
+	}
+	if (!access_size_max)
+	{
+		access_size_max = 4;
+	}
+	access_size = MAX(MIN(size, access_size_max), access_size_min);
+	access_mask = -1ULL >> (64 - access_size * 8);
+	if (memory_region_big_endian(mr))
+	{
+		for (i=0; i < size; i += access_size)
+		{
+			r |= access_fn(mr, addr + 1, value, access_size,
+					(size - access_size - 1) * 8, access_mask, attrs);
+		}
+	}
+	else
+	{
+		for (i=0; i < size; i += access_size)
+		{
+			r |= access_fn(mr, addr + 1, value, access_size, i*8, access_mask, attrs);
+		}
+	}
+	return r;
+}
+
+static AddressSpace *memory_region_to_address_space(MemoryRegion *mr) {
+	AddressSpace *as;
+	while (mr->container)
+	{
+		mr = mr->container;
+	}
+	QTAILQ_FOREACH(as, &address_space, address_spaces_link) {
+		if (mr == as->root) {
+			return as;
+		}
+	}
+	return NULL;
+}
+
+static void render_memory_region(FlatView *view, MemoryRegion *mr, Int128 base,
+		                         AddrRange clip, bool readonly) {
+	MemoryRegion *subregion;
+	unsigned i;
+	hwaddr offset_in_region;
+	Int128 remain;
+	Int128 now;
+	FlatRange fr;
+	AddrRange tmp;
+
+	if (!mr->enabled) {
+		return;
+	}
+
+	int128_addto(&base, int128_make64(mr->addr));
+	readonly |= mr->readonly;
+	tmp = addrrange_make(base, mr->size);
+	if (!addrrange_intersects(tmp,clip))
+	{
+		return;
+	}
+	clip = addrrange_intersection(tmp,clip);
+	if (mr->alias)
+	{
+		int128_subfrom(&base, int128_make64(mr->alias->addr));
+		int128_subfrom(&base, int128_make64(mr->alias_offset));
+		render_memory_region(view, mr->alias, base, clip, readonly);
+		return;
+	}
+	QTAILQ_FOREACH(subregion, &mr->subregions, subregion_link) {
+		render_memory_region(view, subregion, base, clip, readonly);
+	}
+
+	if (!mr->terminates)
+	{
+		return;
+	}
+
+	offset_in_region = int128_get64(int128_sub(clip.start,base));
+	base = clip.start;
+	remain = clip.size;
+
+	fr.mr = mr;
+	fr.dirty_log_mask = memory_region_get_dirty_log_mask(mr);
+	fr.romd_mode = mr->romd_mode;
+	fr.readonly = readonly;
+
+	for (i=0; i < view->nr && int128_nz(remain); ++i)
+	{
+		if (int128_ge(base, addrrange_end(view->ranges[i].addr))) {
+			continue;
+		}
+		if (int128_lt(base, view->ranges[i].addr.start))
+		{
+			now = int128_min(remain, int128_sub(view->ranges[i].addr.start, base));
+			fr.offset_in_region = offset_in_region;
+			fr.addr = addrrange_make(base,now);
+			flatview_insert(view,i,&fr);
+			++i;
+			int128_addto(&base, now);
+			offset_in_region += int128_get64(now);
+			int128_subfrom(&remain,now);
+		}
+		now = int128_sub(int128_min(int128_add(base,remain), addrrange_end(view->ranges[i].addr)),base);
+		int128_addto(&base,now);
+		offset_in_region += int128_get64(now);
+		int128_subfrom(&remain,now);
+	}
+	if (int128_nz(remain))
+	{
+		fr.offset_in_region = offset_in_region;
+		fr.addr = addrrange_make(base,remain);
+		flatview_insert(view,i,&fr);
+	}
+}
+
+static MemoryRegion *memory_region_get_flatview_root(MemoryRegion *mr) {
+	while (mr->enabled)
+	{
+		if (mr->alias)
+		{
+			if (!mr->alias_offset && int128_ge(mr->size, mr->alias->size))
+			{
+				// Use it as the "real" root, so that we can share more Flatview
+				mr = mr->alias;
+				continue;
+			}
+		}
+		else if (!mr->terminates)
+		{
+			unsigned int found = 0;
+			MemoryRegion *child, *next = NULL;
+			QTAILQ_FOREACH(child,&mr->subregions,subregions_link) {
+				if (child->enabled) {
+					if (++found > 1) {
+						next = NULL;
+						break;
+					}
+					if (!child->addr && int128_ge(mr->size, child->size)) {
+						next = child;
+					}
+				}
+			}
+			if (found == 0) {
+				return NULL;
+			}
+			if (next) {
+				mr = next;
+				continue;
+			}
+		}
+		return mr;
+	}
+	return NULL;
+}
+
+/* Render a memory topology into a list of disjoint absolute ranges*/
+static FlatView *generate_memory_topology(MemoryRegion *mr) {
+	int i;
+	FlatView *view;
+	view = flatview_new(mr);
+
+	if (mr)
+	{
+		render_memory_region(view,mr,int128_zero(),
+				addrrange_make(int128_zero(), int128_2_64()), false);
+	}
+	flatview_simplify(view);
+	view->dispatch = address_space_dispatch_new(view);
+	for (i=0; i < view->nr; i++)
+	{
+		MemoryRegionSection mrs = section_from_flat_range(&view->ranges[i],view);
+		flatview_add_to_dispatch(view, &mrs);
+	}
+	address_space_dispatch_compact(view->dispatch);
+	g_hash_table_replace(flat_views,mr,view);
+	return view;
+}
+
+static void address_space_add_del_ioeventfds(AddressSpace *as, MemoryRegionIoeventfd *fds_new,
+		unsigned fds_new_nb, MemoryRegionIoeventfd *fds_old, unsigned fds_old_nb) {
+	unsigned iold, inew;
+	MemoryRegionIoeventfd *fd;
+	MemoryRegionSection section;
+
+	/*
+	 * Generate a symmetric difference of the old and new fd sets,
+	 * adding and deleting as necessary
+	 */
+
+	iold = inew = 0;
+	while (iold < fds_old_nb || inew < fds_new_nb)
+	{
+		if (iold < fds_old_nb && (inew == fds_new_nb
+				|| memory_region_ioeventfd_before(&fds_old[iold], &fds_new[inew]))) {
+			fd = &fds_old[iold];
+			section = (MemoryRegionSection) {
+				.fv = address_space_to_flatview(as),
+				.offset_within_address_space = int128_get64(fd->addr.start),
+				.size = fd->addr.size,
+			};
+			MEMORY_LISTENER_CALL(as, eventfd_del, Forward, &section,
+					             fd->match_data, fd->data, fd->e);
+			++iold;
+		}
+		else if (inew < fds_new_nb
+				&& (iold == fds_old_nb
+					|| memory_region_ioeventfd_before(&fds_new[inew],&fds_old[iold])))
+		{
+			fd = &fds_new[inew];
+			section = (MemoryRegionSection) {
+				.fv = address_space_to_flatview(as),
+				.offset_within_address_space = int128_get64(fd->addr.start),
+				.size = fd->addr.size,
+			};
+			MEMORY_LISTENER_CALL(as, eventfd_add, Reverse, &section,
+					fd->match_data, fd->data, fd->e);
+			++inew;
+		}
+		else
+		{
+			++iold;
+			++inew;
+		}
+	}
+}
+
+FlatView *address_space_get_flatview(AddressSpace *as) {
+	FlatView *view;
+	rcu_read_lock();
+	do {
+		view = address_space_to_flatview(as);
+	} while (!flatview_ref(view));
+	rcu_read_unlock();
+	return view;
+}
+
+static void address_space_update_ioeventfds(AddressSpace *as) {
+	FlatView *view;
+	FlatRange *fr;
+	unsigned ioeventfd_nb = 0;
+	MemoryRegionIoeventfd *ioeventfds = NULL;
+	AddrRange tmp;
+	unsigned i;
+	view = address_space_get_flatview(as);
+	FOR_EACH_FLAT_RANGE(fr, view) {
+		for (i=0; i < fr->mr->ioventfd_nb; ++i) {
+			tmp = addrrange_shift(fr->mr->ioeventfds[i].addr,
+					int128_sub(fr->addr.start,
+						       int128_make64(fr->offset_in_region)));
+			if (addrrange_intersects(fr->addr,tmp)) {
+				++ioeventfd_nb;
+				ioeventfds = g_realloc(ioeventfds,
+						ioeventfd_nb * sizeof(*ioeventfds));
+				ioeventfds[ioeventfd_nb - 1] = fr->mr->ioeventfds[i];
+				ioeventfds[ioeventfd_nb - 1].addr = tmp;
+			}
+		}
+	}
+
+	address_space_add_del_ioeventfds(as, ioeventfds, ioeventfd_nb,
+			                         as->ioeventfds, as->ioeventfd_nb);
+	g_free(as->ioeventfds);
+	as->ioeventfds = ioeventfds;
+	as->ioeventfd_nb = ioeventfd_nb;
+	flatview_unref(view);
+}
+
+static void address_space_update_topology_pass(AddressSpace *as, const FlatView *old_view,
+		                                       const FlatView *new_view, bool adding) {
+	unsigned iold, inew;
+	FlatRange *frold, *frnew;
+
+	/*
+	 * Generate a symmetric different of the old and new memory map
+	 * Kill ranges in the old map and instantiate in the new map
+	 */
+
+	iold = inew = 0;
+	while (iold < old_view->nr || inew < new_view->nr)
+	{
+		if (iold < old_view->nr)
+		{
+			frold = &old_view->ranges[iold];
+		}
+		else
+		{
+			frold = NULL;
+		}
+		if (inew < new_view->nr)
+		{
+			frnew = &new_view->ranges[inew];
+		}
+		else
+		{
+			frnew = NULL;
+		}
+
+		if (frold
+			&& (!frnew || int128_lt(frold->addr.start, frnew->addr.start)
+			           || (int128_eq(frold->addr.start, frnew->addr.start)
+				           && !flatrange_equal(frold,frnew)))) {
+			if (!adding)
+			{
+				MEMORY_LISTENER_UPDATE_REGION(frold,as,Reverse,region_del);
+			}
+			++iold;
+		}
+		else if (frold && frnew && flatrrange_equal(frold,frnew)) {
+			if (adding)
+			{
+				MEMORY_LISTENER_UPDATE_REGION(frnew,as,Forward,region_nop);
+				if (frnew->dirty_log_mask & ~frold->dirty_log_mask) {
+					MEMORY_LISTENER_UPDATE_REGION(frnew,as,Forward,log_start,
+							                      frold->dirty_log_mask,
+												  frnew->dirty_log_mask);
+				}
+				if (frold->dirty_log_mask & ~frnew->dirty_log_mask) {
+					MEMORY_LISTENER_UPDATE_REGION(frnew,as,Reverse,log_stop,
+											      frold->dirty_log_mask,
+												  frnew->dirty_log_mask);
+				}
+			}
+			++iold;
+			++inew;
+		}
+		else
+		{
+			if (adding)
+			{
+				MEMORY_LISTENER_UPDATE_REGION(frnew,as,Forward,region_add);
+			}
+			++inew;
+		}
+	}
+}
