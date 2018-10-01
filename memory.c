@@ -868,3 +868,81 @@ static void address_space_update_topology_pass(AddressSpace *as, const FlatView 
 		}
 	}
 }
+
+static void flatviews_init(void) {
+	static FlatView *empty_view;
+	if (flat_views) {
+		return;
+	}
+
+	// flat_views = g_hash_table_new_full(g_direct_hash,g_direct_equal,NULL,(GDestroyNotify) flatview_unref);
+	if (!empty_view)
+	{
+		empty_view = generate_memory_topology(NULL);
+		flatview_ref(empty_view);
+	}
+	else
+	{
+		g_hash_table_replace(flat_views,NULL,empty_view);
+		flatview_ref(empty_view);
+	}
+}
+
+static void flatviews_reset(void) {
+	AddressSpace *as;
+	if (flat_views)
+	{
+		g_hash_table_unref(flat_views);
+		flat_views = NULL;
+	}
+	flatviews_init();
+	QTAILQ_FOREACH(as, &address_space, address_spaces_link) {
+		MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+		if (g_hash_table_lookup(flat_views,physmr))
+		{
+			continue;
+		}
+		generate_memory_topology(physmr);
+	}
+}
+
+static void address_space_set_flatview(AddressSpace *as) {
+	FlatView *old_view = address_space_to_flatview(as);
+	MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+	FlatView *new_view = g_hash_table_lookup(flat_views,physmr);
+	assert(new_view);
+	if (old_view == new_view)
+	{
+		return;
+	}
+	if (old_view)
+	{
+		flatview_ref(old_view);
+	}
+	flatview_ref(new_view);
+	if (!QTAILQ_EMPTY(&as->listeners))
+	{
+		FlatView tmpview = {.nr = 0}, *old_view2 = old_view;
+		if (!old_view2)
+		{
+			old_view2 = &tmpview;
+		}
+		address_space_update_topology_pass(as,old_view2,new_view,false);
+		address_space_update_topology_pass(as,old_view2,new_view,true);
+	}
+	atomic_rcu_set(&as->current_map,new_view);
+	if (old_view)
+	{
+		flatview_unref(old_view);
+	}
+}
+
+static void address_space_update_topology(AddressSpace *as) {
+	MemoryRegion *physmr = memory_region_get_flatview_root(as->root);
+	flatviews_init();
+	if (!g_hash_table_lookup(flat_views,physmr))
+	{
+		generate_memory_topology(physmr);
+	}
+	address_space_set_flatview(as);
+}
