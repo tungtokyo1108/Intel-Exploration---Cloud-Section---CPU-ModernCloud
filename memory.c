@@ -946,3 +946,274 @@ static void address_space_update_topology(AddressSpace *as) {
 	}
 	address_space_set_flatview(as);
 }
+
+void memory_region_transaction_begin(void) {
+	qemu_flush_coalesced_mmio_buffer();
+	++memory_region_transaction_depth;
+}
+
+void memory_region_transaction_commit(void) {
+	AddressSpace *as;
+	assert(memory_region_transaction_depth);
+	assert(qemu_mutex_iothread_locked());
+
+	--memory_region_transaction_depth;
+	if (!memory_region_transaction_depth)
+	{
+		if (memory_region_update_pending)
+		{
+			flatviews_reset();
+			MEMORY_LISTENER_CALL_GLOBAL(begin, Forward);
+			QTAILQ_FOREACH(as, &address_spaces,address_spaces_link) {
+				address_space_set_flatview(as);
+				address_space_update_ioeventfds(as);
+			}
+			memory_region_update_pending = false;
+			ioeventfd_update_pending = false;
+			MEMORY_LISTENER_CALL_GLOBAL(commit,Forward);
+		}
+		else if (ioeventfd_update_pending)
+		{
+			QTAILQ_FOREACH(as, &address_spaces, address_spaces_link) {
+				address_space_update_ioeventfds(as);
+			}
+			ioeventfd_update_pending = false;
+		}
+	}
+}
+
+static void memory_region_destruction_none(MemoryRegion *mr) {
+}
+
+static void memory_region_destruction_ram(MemoryRegion *mr) {
+	qemu_ram_free(mr->ram_block);
+}
+
+static bool memory_region_escape_name(const char *name) {
+	const char *p;
+	char *escaped, *q;
+	uint8_t c;
+	size_t bytes = 0;
+	for (p = name; *p; p++)
+	{
+		bytes += memory_region_need_escape(*p) ? 4 : 1;
+	}
+	if (bytes == p - name)
+	{
+		return g_memdup(name, bytes + 1);
+	}
+	escaped = g_malloc(bytes + 1);
+	for (p = name, q = escaped; *p; p++)
+	{
+		c = *p;
+		if (unlikely(memory_region_need_escape(c)))
+		{
+			*q++ = '\\';
+			*q++ = 'x';
+			*q++ = "0123456789abcdef"[c >> 4];
+			c = "0123456789abcdef"[c & 15];
+		}
+		*q++ = c;
+	}
+	*q = 0;
+	return escaped;
+}
+
+static void memory_region_do_init(MemoryRegion *mr, Object *owner,
+                                  const char *name, uint64_t size)
+{
+	mr->size = int128_make64(size);
+	if (size == UINT64_MAX)
+	{
+		mr->size = int128_2_64();
+	}
+	mr->name = g_strdup(name);
+	mr->owner = owner;
+	mr->ram_block = NULL;
+
+	if (name)
+	{
+		char *escaped_name = memory_region_escape_name(name);
+		char *name_array = g_strdup_printf("%s[*]", escaped_name);
+		if (!owner)
+		{
+			owner = container_get(qdev_get_machine(), "/unattached");
+		}
+		object_property_add_child(owner, name_array, OBJECT(mr), &error_abort);
+		object_unref(OBJECT(mr));
+		g_free(name_array);
+		g_free(escaped_name);
+	}
+}
+
+void memory_region_init(MemoryRegion *mr, Object *owner,
+                        const char *name, uint64_t size)
+{
+	object_initialize(mr, sizeof(*mr), TYPE_MEMORY_REGION);
+	memory_region_do_init(mr, owner, name, size);
+}
+
+static void memory_region_get_addr(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	uint64_t value = mr->addr;
+	visit_type_uint64(v, name, &value, errp);
+}
+
+static void memory_region_get_container(Object *obj, Visitor *v, const char name,
+                                        void *opaque, Error **errp)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	gchar *path = (gchar *)"";
+	if (mr->container)
+	{
+		path = object_get_canonical_path(OBJECT(mr->container));
+	}
+	visit_type_str(v,name,&path,errp);
+	if (mr->container)
+	{
+		g_free(path);
+	}
+}
+
+static Object *memory_region_resolve_container(Object *obj, void *opaque,
+                                               const char *part)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	return OBJECT(mr->container);
+}
+
+static void memory_region_get_priority(Object *obj, Visitor *v, const char *name,
+                                       void *opaque, Error **errp)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	int32_t value = mr->priority;
+	visit_type_int32(v, name, &value, errp);
+}
+
+static void memory_region_get_size(Object *obj, Visitor *v, const char *name,
+                                   void *opaque, Error **errp)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	uint64_t value = memory_region_size(mr);
+	visit_type_uint64(v,name,&value,errp);
+}
+
+static void memory_region_initfn(Object *obj)
+{
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	OjectProperty *op;
+	mr->ops = &unassigned_mem_ops;
+	mr->enabled = true;
+	mr->romd_mode = true;
+	mr->global_locking = true;
+	mr->destructor = memory_region_destruction_none;
+	QTAILQ_INIT(&mr->subregions);
+	QTAILQ_INIT(&mr->colesced);
+	op = object_property_add(OBJECT(mr),"container","link<"TYPE_MEMORY_REGION">",
+                           memory_region_get_container, NULL, NULL, NULL,
+												   &error_abort);
+	op->resolve = memory_region_resolve_container;
+	object_property_add(OBJECT(mr), "addr", "uint64", memory_region_get_addr,
+                      NULL, NULL, NULL, &error_abort);
+	object_property_add(OBJECT(mr), "priority", "uint32", memory_region_get_priority,
+                      NULL, NULL, NULL, &error_abort);
+	object_property_add(OBJECT(mr), "size", "uint64", memory_region_get_size,
+                      NULL, NULL, NULL, &error_abort);																																 
+}
+
+static void iommu_memory_region_initfn(Object *obj) {
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	mr->is_iommu = true;
+}
+
+static uint64_t unassigned_mem_read(void *opaque, hwaddr addr, unsigned size) {
+#ifdef DEBUG_UNASSIGNED
+	printf("Unassigned mem read" TARGET_FMT_plx "\n", addr);
+#endif
+
+	if (current_cpu != NULL)
+	{
+		cpu_unassigned_access(current_cpu, false, false, 0, size);
+	}
+	return 0;
+}
+
+static void unassigned_mem_write(void *opaque, hwaddr addr, uint64_t val, unsigned size) {
+#ifdef DEBUG_UNASSIGNED
+	printf("Unassigned mem write" TARGET_FMT_plx" = 0x%"PRIx64"\n", addr, val);
+#endif
+	if (current_cpu != NULL)
+	{
+		cpu_unassigned_access(current_cpu, addr, true, false, 0, size);
+	}
+}
+
+static bool unassigned_mem_accepts(void *opaque, hwaddr addr, unsigned size,
+		                           bool is_write, MemTxAttrs attrs) {
+	return false;
+}
+
+const MemoryRegionOps unassigned_mem_ops = {
+	.valid.accepts = unassigned_mem_accepts,
+	.endianness = DEVICE_NATIVE_ENDIAN,
+};
+
+static uint64_t memory_region_ram_device_read(void *opaque, hwaddr addr, unsigned size) {
+	MemoryRegion *mr = opaque;
+	uint64_t data = (uint64_t)~0;
+
+	switch(size) {
+	case 1:
+		data = *(uint8_t *)(mr->ram_block->host + addr);
+		break;
+	case 2:
+		data = *(uint16_t *)(mr->ram_block->host + addr);
+		break;
+	case 3:
+		data = *(uint32_t *)(mr->ram_block->host + addr);
+		break;
+	case 4:
+		data = *(uint64_t *)(mr->ram_block->host + addr);
+		break;
+	}
+	trace_memory_region_ram_device_read(get_cpu_index(), mr, addr, data, size);
+	return data;
+}
+
+static void memory_region_ram_device_write(void *opaque, hwaddr addr,
+		                                   uint64_t data, unsigned size) {
+	MemoryRegion *mr = opaque;
+	trace_memory_region_ram_device_write(get_cpu_index(),mr,addr,data,size);
+	switch(size) {
+	case 1:
+		*(uint8_t *)(mr->ram_block->host + addr) = (uint8_t)data;
+		break;
+	case 2:
+		*(uint16_t *)(mr->ram_block->host + addr) = (uint16_t)data;
+		break;
+	case 3:
+		*(uint32_t *)(mr->ram_block->host + addr) = (uint32_t)data;
+		break;
+	case 4:
+		*(uint64_t *)(mr->ram_block->host + addr) = (uint64_t)data;
+		break;
+	}
+}
+
+static const MemoryRegionOps ram_device_mem_ops = {
+	.read = memory_region_ram_device_read,
+	.write = memory_region_ram_device_write,
+	.endianness = DEVICE_HOST_ENDIAN,
+	.valid = {
+		.min_access_size = 1,
+		.max_access_size = 8,
+		.unaligned = true,
+	},
+	.impl = {
+		.min_access_size = 1,
+		.max_access_size = 8,
+		.unaligned = true,
+	},
+};
