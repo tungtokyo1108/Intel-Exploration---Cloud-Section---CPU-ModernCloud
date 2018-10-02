@@ -15,6 +15,8 @@
 #include "qemu/queue.h"
 #include "qemu/int128.h"
 #include "qemu/notify.h"
+#include "qemu/osdep.h"
+#include "qemu/typedefs.h"
 #include "qom/object.h"
 #include "qemu/rcu.h"
 #include "hw/qdev-core.h"
@@ -86,8 +88,7 @@ typedef struct IOMMUNotifier {
 	QLIST_ENTRY(IOMMUNotifier) node;
 } IOMMUNotifier;
 
-static inline void iommu_notifier_init(IOMMUNotifier *n, IOMMUNotify fn, IOMMUNotifier flags, hwaddr start, 
-				       hwaddr end, int iommu_idx) {
+static inline void iommu_notifier_init(IOMMUNotifier *n, IOMMUNotify fn, IOMMUNotifier flags, hwaddr start, hwaddr end, int iommu_idx) {
 	n->notify = fn;
 	n->notifier_flags = flags;
 	n->start = start;
@@ -119,8 +120,7 @@ typedef struct MemoryRegionOps {
 	} valid;
 
 	struct impl {
-		// specifies the minimum size implemented. Smaller sizes will be rounded upwards 
-		// and a partial result will be returned
+		// specifies the minimum size implemented. Smaller sizes will be rounded upwards and a partial result will be returned
 		unsigned min_access_size;
 		// specifies the maximum size implemented. Larger sizes will be done as a series of accesses with smaller size
 		unsigned max_access_size;
@@ -136,8 +136,7 @@ enum IOMMUMemoryRegionAttr {
 
 /**
  * an IOMMU provides a mapping from input address to an output TLB entry.
- * If the IOMMU is aware of memory transaction attributes 
- * and the output TLB entry depends on transaction attributes. we represent this using IOMMU indexes.
+ * If the IOMMU is aware of memory transaction attributes and the output TLB entry depends on transaction attributes. we represent this using IOMMU indexes.
  * @attr_to_index returns the IOMMU index for a set of transaction attributes
  * @translate takes an input address and an IOMMU index
  * and mapping return can only depend on the input address and IOMMU index
@@ -147,10 +146,9 @@ typedef struct IOMMUMemoryRegionClass IOMMUMemoryRegionClass;
 typedef struct IOMMUMemoryRegionClass {
 	struct DeviceClass parent_class;
 	/**
-	 * The IOMMUAccessFlags indicated via @flag are optional and may be specified 
-	 * as IOMMU_NONE to indicate that caller needs the full translation informatio for both reads and write.
-	 * If the access flags are specified then IOMMU implementation may use this as optimization, 
-	 * to stop doing a page table walk as soon as it knows
+	 * The IOMMUAccessFlags indicated via @flag are optional and may be specified as IOMMU_NONE to indicate that caller needs the full translation information
+	 * for both reads and write.
+	 * If the access flags are specified then IOMMU implementation may use this as optimization, to stop doing a page table walk as soon as it knows
 	 * that the requested permission are not allowed.
 	 */
 	IOMMUTLBEntry (*translate)(IOMMUMemoryRegion *iommu, hwaddr addr, IOMMUAccessFlags flag, int iommu_idx);
@@ -242,10 +240,8 @@ typedef struct MemoryListener {
 	void (*log_sync)(MemoryListener *listener, MemoryRegionSection *section);
 	void (*log_global_start)(MemoryListener *listener);
 	void (*log_global_stop)(MemoryListener *listener);
-	void (*eventfd_add)(MemoryListener *listener, MemoryRegionSection *section, bool match_data, 
-			    uint64_t data, EventNotifier *e);
-	void (*eventfd_del)(MemoryListener *listener, MemoryRegionSection *section, bool match_data, 
-			    uint64_t data, EventNotifier *e);
+	void (*eventfd_add)(MemoryListener *listener, MemoryRegionSection *section, bool match_data, uint64_t data, EventNotifier *e);
+	void (*eventfd_del)(MemoryListener *listener, MemoryRegionSection *section, bool match_data, uint64_t data, EventNotifier *e);
 	void (*coalesced_mmio_add)(MemoryListener *listener, MemoryRegionSection *section, hwaddr addr, hwaddr len);
 	void (*coalesced_mmio_del)(MemoryListener *listener, MemoryRegionSection *section, hwaddr addr, hwaddr len);
 	unsigned priority;
@@ -305,17 +301,14 @@ void memory_region_init(MemoryRegion *mr, Object *owner, const char *name, uint6
 void memory_region_ref(MemoryRegion *mr);
 void memory_region_unref(MemoryRegion *mr);
 
-// Access into the region will cause the callbacks in @op to be called. 
-// If @size is nonzero, subregions will be clipped to @size
+// Access into the region will cause the callbacks in @op to be called. If @size is nonzero, subregions will be clipped to @size
 
-void memory_region_init_io(MemoryRegion *mr, Object *owner, const MemoryRegionOps *ops, 
-			   void *opaque, const char *name, uint64_t size);
+void memory_region_init_io(MemoryRegion *mr, Object *owner, const MemoryRegionOps *ops, void *opaque, const char *name, uint64_t size);
 
 // Initialize RAM memory region. Accesses into the region will modify memory directly.
 
-void memory_region_init_ram_nomigrate(MemoryRegion *mr, Oject *owner, const char *name, uint64_t size, Error **errp);
-void memory_region_init_ram_shared_nomigrate(MemoryRegion *mr, Oject *owner, const char *name, 
-					     uint64_t size, bool share, Error **errp);
+void memory_region_init_ram_nomigrate(MemoryRegion *mr, Object *owner, const char *name, uint64_t size, Error **errp);
+void memory_region_init_ram_shared_nomigrate(MemoryRegion *mr, Object *owner, const char *name, uint64_t size, bool share, Error **errp);
 
 // Initialize memory region with resizeable RAM. Only an initial portion of this RAM is actually used.
 // The used size can change across reboots
@@ -330,24 +323,23 @@ void memory_region_init_ram_from_fd(MemoryRegion *mr, Object *owner, const char 
 		                              bool share, int fd, Error **errp);
 
 // Initialize RAM memory region from a user-provided pointer.
-void memory_region_init_ram_ptr(MemoryRegion *mr, Oject *owner, const char *name, uint64_t size, void *ptr);
+void memory_region_init_ram_ptr(MemoryRegion *mr, Object *owner, const char *name, uint64_t size, void *ptr);
 
 /**
  * A RAM device represents a mapping to a physical device.
  * The memory region may be mapped into the VM address space and access to the region will modify directly
  * The memory region should not be included in a memory dump, device may not be enabled/mapped at the time of the dump
  */
-void memory_region_init_ram_device_ptr(MemoryRegion *mr, Oject *owner, const char *name, uint64_t size, void *ptr);
+void memory_region_init_ram_device_ptr(MemoryRegion *mr, Object *owner, const char *name, uint64_t size, void *ptr);
 
 // Initialize a memory region that aliase all or a part of another memory region.
-void memory_region_init_alias(MemoryRegion *mr, Object *owner, const char *name, MemoryRegion *orig, 
-			      hwaddr offset, uint64_t size);
+void memory_region_init_alias(MemoryRegion *mr, Object *owner, const char *name, MemoryRegion *orig, hwaddr offset, uint64_t size);
 
 // Initialize a ROM memory region.
-void memory_region_init_rom_nomigrate(MemoryRegion *mr, Oject *owner, const char *name, uint64_t size, Error **errp);
+void memory_region_init_rom_nomigrate(MemoryRegion *mr, Object *owner, const char *name, uint64_t size, Error **errp);
 
 // Initialize a ROM memory region, write are handled via callbacks
-void memory_region_init_rom_device_nomigrate(MemoryRegion *mr, Oject *owner,const MemoryRegionOps *ops, void *opaque,
+void memory_region_init_rom_device_nomigrate(MemoryRegion *mr, Object *owner,const MemoryRegionOps *ops, void *opaque,
 		                                     const char *name, uint64_t size, Error **errp);
 
 /**
@@ -359,8 +351,7 @@ void memory_region_init_rom_device_nomigrate(MemoryRegion *mr, Oject *owner,cons
  * will be called to handle accesses to memory region
  */
 
-void memory_region_init_iommu(void *_iommu_mr, size_t instance_size, const char *mrtypename, 
-			      Object *owner, const char *name, uint64_t size);
+void memory_region_init_iommu(void *_iommu_mr, size_t instance_size, const char *mrtypename, Object *owner, const char *name, uint64_t size);
 
 /**
  * Initialize RAM memory region.
@@ -385,8 +376,7 @@ void memory_region_init_rom(MemoryRegion *mr, Object *owner, const char *name, u
  * arranges for the RAM backing to be migrated
  */
 
-void memory_region_init_rom_device(MemoryRegion *mr, Object *owner,const MemoryRegionOps *ops, 
-				   void *opaque, const char *name, uint64_t size, Error **errp);
+void memory_region_init_rom_device(MemoryRegion *mr, Object *owner,const MemoryRegionOps *ops, void *opaque, const char *name, uint64_t size, Error **errp);
 
 // get a memory region's owner
 struct Object *memory_region_owner(MemoryRegion *mr);
@@ -662,22 +652,22 @@ typedef struct MemoryRegionCache {
 
 static inline uint8_t address_ldub_cached(MemoryRegionCache *cache, hwaddr addr, MemTxAttrs attrs, MemTxResult *result) {
 	assert(addr < cache->len);
-	if (likely(cache->ptr))
+	return ldub_p(cache->ptr + addr);
+	/*if (likely(cache->ptr))
 	{
 		return ldub_p(cache->ptr + addr);
 	} else {
 		return address_space_ldub_cached_slow(cache,addr,attrs,result);
-	}
+	}*/
 }
 
-static inline void address_space_stb_cached(MemoryRegionCache *cache, hwaddr addr, uint32_t val, 
-					    MemTxAttrs attrs, MemTxResult *result) {
+static inline void address_space_stb_cached(MemoryRegionCache *cache, hwaddr addr, uint32_t val, MemTxAttrs attrs, MemTxResult *result) {
 	assert(addr < cache->len);
 	if (likely(cache->ptr))
 	{
 		stb_p(cache->ptr + addr, val);
 	} else {
-		address_space_stb_cached_slow(cache, addr, val, attrs, result);
+		// address_space_stb_cached_slow(cache, addr, val, attrs, result);
 	}
 }
 
@@ -706,8 +696,7 @@ IOMMUTLBEntry address_space_get_iotlb_entry(AddressSpace *as, hwaddr addr, bool 
 
 // translate an address range into an address space into MemoryRegion and an address range into that section.
 MemoryRegion *flatview_translate(FlatView *fv, hwaddr addr, hwaddr *xlat, hwaddr *len, bool is_write, MemTxAttrs attrs);
-static inline MemoryRegion *address_space_translate(AddressSpace *as, hwaddr addr, hwaddr *xlat, 
-						    hwaddr *len, bool is_write, MemTxAttrs attrs) {
+static inline MemoryRegion *address_space_translate(AddressSpace *as, hwaddr addr, hwaddr *xlat, hwaddr *len, bool is_write, MemTxAttrs attrs) {
 	return flatview_translate(address_space_to_flatview(as),addr,xlat,len,is_write,attrs);
 }
 
@@ -759,7 +748,7 @@ MemTxResult address_space_read(AddressSpace *as, hwaddr addr, MemTxAttrs attrs, 
 			mr = flatview_translate(fv,addr,&addr1,&l,false,attrs);
 			if (len == l && memory_access_is_direct(mr,false))
 			{
-				ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
+				// ptr = qemu_map_ram_ptr(mr->ram_block, addr1);
 				memcpy(buf,ptr,len);
 			} else {
 				result = flatview_read_continue(fv, addr, attrs, buf , len, addr1,1,mr);
@@ -791,4 +780,5 @@ static inline void address_space_write_cached(MemoryRegionCache *cache, hwaddr a
 		address_space_write_cached_slow(cache,addr,buf,len);
 	}
 }
+
 #endif /* EXEC_MEMORY_H_ */
