@@ -1370,3 +1370,150 @@ void memory_region_init_ram_shared_nomigrate(MemoryRegion *mr, Object *owner,
 	mr->ram_block = qemu_ram_alloc(size, share, mr, errp);
 	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
 }
+
+void memory_region_init_resizeable_ram(MemoryRegion *mr, Object *owner, const char *name,
+		uint64_t size, uint64_t max_size, void(*resized)(const char *, uint64_t length,
+				void *host), Error **errp) {
+	memory_region_init(mr, owner,name, size);
+	mr->ram = true;
+	mr->terminates = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->ram_block = qemu_ram_alloc_resizeable(size, max_size, resized, mr, errp);
+	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
+}
+
+#ifdef __linux__
+
+void memory_region_init_ram_from_file(MemoryRegion *mr, struct Object *owner, const char *name,
+		uint64_t size, uint64_t align, bool share, const char *path, Error **errp) {
+	memory_region_init(mr, owner, name, size);
+	mr->ram = true;
+	mr->terminates = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->align = align;
+	mr->ram_block = qemu_ram_block_from_file(size, mr, share, path, errp);
+	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
+}
+
+void memory_region_init_ram_from_fd(MemoryRegion *mr, struct Object *owner, const char *name,
+		uint64_t size, bool share, int fd, Error **errp){
+	memory_region_init(mr,owner,name,size);
+	mr->ram = true;
+	mr->terminates = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->ram_block = qemu_ram_alloc_from_fd(size, mr, share, fd, errp);
+	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
+}
+
+#endif
+
+void memory_region_init_ram_ptr(MemoryRegion *mr, Object *owner, const char *name,
+		                        uint64_t size, void *ptr) {
+	memory_region_init(mr, owner, name, size);
+	mr->ram = true;
+	mr->terminates = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
+	assert(ptr != NULL);
+	mr->ram_block = qemu_ram_alloc_from_ptr(size, ptr, mr, &error_fatal);
+}
+
+void memory_region_init_ram_device_ptr(MemoryRegion *mr, Object *owner, const char *name,
+		                               uint64_t size, void ptr) {
+	memory_region_init_ram_ptr(mr, owner, name, size, ptr);
+	mr->ram_device = true;
+	mr->ops = &ram_device_mem_ops;
+	mr->opaque = mr;
+}
+
+void memory_region_init_alias(MemoryRegion *mr, Object *owner, const char *name,
+		                      MemoryRegion *orig, hwaddr offset, uint64_t size) {
+	memory_region_init_ram_ptr(mr,owner,name,size);
+	mr->alias = orig;
+	mr->alias_offset = offset;
+}
+
+void memory_region_init_rom_nomigrate(MemoryRegion *mr, struct Object *owner,
+		                              const char *name, uint64_t size, Error **errp) {
+	memory_region_init(mr,owner,name,size);
+	mr->ram = true;
+	mr->readonly = true;
+	mr->terminates = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->ram_block = qemu_ram_alloc(size, false, mr, errp);
+	mr->dirty_log_mask = tcg_enabled() ? (1 << DIRTY_MEMORY_CODE) : 0;
+}
+
+void memory_region_init_rom_device_nomigrate(MemoryRegion *mr, Object *owner,
+		const MemoryRegionOps ops, void *opaque, const char *name, uint64_t size, Error **errp) {
+	assert(ops);
+	memory_region_init(mr,owner,name,size);
+	mr->ops = ops;
+	mr->opaque = opaque;
+	mr->terminates = true;
+	mr->rom_device = true;
+	mr->destructor = memory_region_destruction_ram;
+	mr->ram_block = qemu_ram_alloc(size,false,mr,errp);
+}
+
+void memory_region_init_iommu(void *_iommu_mr, size_t instance_size, const char *mrtypename,
+		                      Object *owner, const char *name, uint64_t size) {
+	struct IOMMUMemoryRegion *iommu_mr;
+	struct MemoryRegion *mr;
+
+	object_initialize(_iommu_mr, instance_size, mrtypename);
+	mr = MEMORY_REGION(_iommu_mr);
+	memory_region_do_init(mr,owner,name,size);
+	iommu_mr = IOMMU_MEMORY_REGION(mr);
+	mr->terminates = true;
+	// QLIST_INIT(&iommu_mr->iommu_notify);
+	iommu_mr->iommu_notify_flags = IOMMU_NOTIFIER_NONE;
+}
+
+static void memory_region_finalize(Object *obj) {
+	MemoryRegion *mr = MEMORY_REGION(obj);
+	assert(!mr->container);
+	/*
+	 * The region is not visible in any address spac
+	 * It does not hav a container and cannot be a root
+	 */
+	mr->enabled = false;
+	memory_region_transaction_begin();
+	while (!QTAILQ_EMPTY(&mr->subregions))
+	{
+		MemoryRegion *subregion = QTAILQ_FIRST(&mr->subregions);
+		memory_region_del_subregion(mr,subregion);
+	}
+	memory_region_transaction_commit();
+	mr->destructor(mr);
+	memory_region_clear_coalescing(mr);
+	g_free((char *)mr->name);
+	g_free(mr->ioeventfds);
+}
+
+Object *memory_region_owner(MemoryRegion *mr) {
+	Object *obj = OBJECT(mr);
+	return obj->parent;
+}
+
+/*
+ * MMIO callbacks most likely will access data
+ * that belongs to the owner, hence the need to ref/unref the owner
+ * whenever the memory region is in use
+ *
+ */
+
+void memory_region_ref(MemoryRegion *mr) {
+	if (mr && mr->owner)
+	{
+		object_ref(mr->owner);
+	}
+}
+
+uint64_t memory_region_size(MemoryRegion *mr) {
+	if (int128_eq(mr->size, int128_2_64()))
+	{
+		return UINT64_MAX;
+	}
+	return int128_get64(mr);
+}
