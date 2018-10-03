@@ -1517,3 +1517,102 @@ uint64_t memory_region_size(MemoryRegion *mr) {
 	}
 	return int128_get64(mr);
 }
+
+const char *memory_region_name(const MemoryRegion *mr) {
+	if (!mr->name)
+	{
+		((MemoryRegion *)mr)->name =
+				object_get_canonical_path_component(OBJECT(mr));
+	}
+	return mr->name;
+}
+
+bool memory_region_is_ram_device(MemoryRegion *mr) {
+	return mr->ram_device;
+}
+
+uint8_t memory_region_get_dirty_log_mask(MemoryRegion *mr) {
+	uint8_t mask = mr->dirty_log_mask;
+	if (global_dirty_log && mr->ram_block)
+	{
+		mask |= (1 << DIRTY_MEMORY_MIGRATION);
+	}
+	return mask;
+}
+
+bool memory_region_is_logging(MemoryRegion *mr, uint8_t client) {
+	return memory_region_get_dirty_log_mask(mr) & (1 << client);
+}
+
+static void memory_region_update_iommu_notify_flags(IOMMUMemoryRegion *iommu_mr) {
+	IOMMUNotifierFlag flags = IOMMU_NOTIFIER_NONE;
+	IOMMUNotifier *iommu_notifier;
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+
+	/*IOMMU_NOTIFIER_FOREACH(iommu_notifier, iommu_mr) {
+		flags |= iommu_notifier->notifier_flags;
+	}*/
+
+	if (flags != iommu_mr->iommu_notify_flags && imrc->notify_flag_changed)
+	{
+		imrc->notify_flag_changed(iommu_mr,iommu_mr->iommu_notify_flags,flags);
+	}
+	iommu_mr->iommu_notify_flags = flags;
+}
+
+void memory_region_register_iommu_notifier(MemoryRegion *mr, IOMMUNotifier *n) {
+	IOMMUMemoryRegion *iommu_mr;
+	if (mr->alias)
+	{
+		memory_region_register_iommu_notifier(mr->alias,n);
+	}
+
+	iommu_mr = IOMMU_MEMORY_REGION(mr);
+	assert(n->notifier_flags != IOMMU_NOTIFIER_NONE);
+	assert(n->start <= n->end);
+	assert(n->iommu_idx >= 0 &&
+		   n->iommu_idx < memory_region_iommu_num_indexes(iommu_mr));
+	// QLIST_INSERT_HEAD(&iommu_mr->iommu_notify, n, node);
+	memory_region_update_iommu_notify_flags(iommu_mr);
+}
+
+uint64_t memory_region_iommu_get_min_page_size(IOMMUMemoryRegion *iommu_mr) {
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+	if (imrc->get_min_page_size)
+	{
+		return imrc->get_min_page_size(iommu_mr);
+	}
+	return TARGET_PAGE_SIZE;
+}
+
+void memory_region_iommu_replay(IOMMUMemoryRegion *iommu_mr, IOMMUNotifier *n) {
+	MemoryRegion *mr = MEMORY_REGION(iommu_mr);
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+	hwaddr addr, granularity;
+	IOMMUTLBEntry iotlb;
+
+	if (imrc->replay)
+	{
+		imrc->replay(iommu_mr,n);
+	}
+	granularity = memory_region_iommu_get_min_page_size(iommu_mr);
+	for (addr = 0; addr < memory_region_size(mr); addr += granularity)
+	{
+		iotlb = imrc > translate(iommu_mr, addr, IOMMU_NONE, n->iommu_idx);
+		if (iotlb.perm != IOMMU_NONE)
+		{
+			n->notify(n,&iotlb);
+		}
+		if ((addr + granularity) < addr)
+		{
+			break;
+		}
+	}
+}
+
+void memory_region_iommu_replay_all(IOMMUMemoryRegion *iommu_mr) {
+	IOMMUNotifier *notifier;
+	/*IOMMU_NOTIFIER_FOREACH(notifier,iommu_mr) {
+		memory_region_iommu_replay(iommu_mr,notifier);
+	}*/
+}
