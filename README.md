@@ -3,6 +3,7 @@
 -----------------------------------------------------------------------------------------------------------------------------------------
 
 NEMU is the large project in Intel open source projects. There are a lot of unique and interesting techniques which Intel has designed and developed for the Cloud technology compared with others such as Google Cloud and Microsoft Cloud. 
+
 In my Github, I have focused profoundly the coding files which Intel has developed some techinques in order to optimize CPU, Memory as well as accelerate the power of hardware for Cloud. 
 
 --------------------------------------------------------------------------------------------------------------------------------------
