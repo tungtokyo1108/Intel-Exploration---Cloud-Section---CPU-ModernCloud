@@ -1616,3 +1616,225 @@ void memory_region_iommu_replay_all(IOMMUMemoryRegion *iommu_mr) {
 		memory_region_iommu_replay(iommu_mr,notifier);
 	}*/
 }
+
+void memory_region_unregister_iommu_notifier(MemoryRegion *mr, IOMMUNotifier *n) {
+	IOMMUMemoryRegion *iommu_mr;
+	if (mr->alias)
+	{
+		memory_region_unregister_iommu_notifier(mr->alias,n);
+		return;
+	}
+	QLIST_REMOVE(n,node);
+	iommu_mr = IOMMU_MEMORY_REGION(mr);
+	memory_region_update_iommu_notify_fiags(iommu_mr);
+}
+
+void memory_region_notify_one(IOMMUNotifier *notifier, IOMMUTLBEntry *entry) {
+	IOMMUNotifierFlag request_flags;
+	if (notifier->start > entry->iova + entry->addr_mask ||
+		notifier->end < entry->iova)
+	{
+		return;
+	}
+
+	if (entry->perm & IOMMU_RW)
+	{
+		request_flags = IOMMU_NOTIFIER_MAP;
+	}
+	else
+	{
+		request_flags = IOMMU_NOTIFIER_UNMAP;
+	}
+
+	if (notifier->notifier_flags & request_flags)
+	{
+		notifier->notify(notifier,entry);
+	}
+}
+
+void memory_region_notify_iommu(IOMMUMemoryRegion *iommu_mr, int iommu_idx,
+		                          IOMMUTLBEntry entry) {
+	IOMMUNotifier *iommu_notifier;
+	assert(memory_region_is_iommu(MEMORY_REGION(iommu_mr)));
+	/*IOMMU_NOTIFIER_FOREACH(iommu_notifier, iommu_mr) {
+		if (iommu_notifier->iommu_idx == iommu_idx)
+		{
+			memory_region_notify_one(iommu_notifier, &entry);
+		}
+	}*/
+}
+
+int memory_region_iommu_get_attr(IOMMUMemoryRegion *iommu_mr,
+		                         enum IOMMUMemoryRegionAttr attr, void *data) {
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+	if (!imrc->get_attr)
+	{
+		return -EINVAL;
+	}
+	return imrc->get_attr(iommu_mr, attr, data);
+}
+
+int memory_region_iommu_attrs_to_index(IOMMUMemoryRegion *iommu_mr,
+		                               MemTxAttrs attrs) {
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+	if (!imrc->attrs_to_index)
+	{
+		return 0;
+	}
+	return imrc->attrs_to_index(iommu_mr, attrs);
+}
+
+int memory_region_iommu_num_indexes(IOMMUMemoryRegion *iommu_mr) {
+	IOMMUMemoryRegionClass *imrc = IOMMU_MEMORY_REGION_GET_CLASS(iommu_mr);
+	if (!imrc->num_indexes)
+	{
+		return 1;
+	}
+	return imrc->num_indexes(iommu_mr);
+}
+
+void memory_region_set_log(MemoryRegion *mr, bool log, unsigned client) {
+	uint8_t mask = 1 << client;
+	uint8_t old_logging;
+
+	assert(client == DIRTY_MEMORY_VGA);
+	old_logging = mr->vga_logging_count;
+	mr->vga_logging_count += log ? 1 : -1;
+	if (!!old_logging == !!mr->vga_logging_count) {
+		return;
+	}
+	memory_region_transaction_begin();
+	mr->dirty_log_mask = (mr->dirty_log_mask & ~mask) | (log * mask);
+	memory_region_update_pending |= mr->enabled;
+	memory_region_transaction_commit();
+}
+
+bool memory_region_get_dirty(MemoryRegion *mr, hwaddr addr,
+		                     hwaddr size, unsigned client) {
+	assert(mr->ram_block);
+	return cpu_physical_memory_get_dirty(memory_region_get_ram_addr(mr) + addr,
+			                             size, client);
+}
+
+void memory_region_set_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size) {
+	assert(mr->ram_block);
+	cpu_physical_memory_set_dirty_range(memory_region_get_ram_addr(mr) + addr,
+			                            size,
+										memory_region_get_dirty_log_mask(mr));
+}
+
+static void memory_region_sync_dirty_bitmap(MemoryRegion *mr) {
+	MemoryListener *listener;
+	AddressSpace *as;
+	FlatView *view;
+	FlatRange *fr;
+	/*
+	 * If the same address space has multiple log_sync listener,
+	 * we visit address space`s FlatView multiple times.
+	 * log_aync listener is still cheaper than walking each address space one
+	 */
+	QTAILQ_FOREACH(listener, &memory_listeners, link) {
+		if (!listener->log_sync)
+		{
+			continue;
+		}
+		as = listener->address_space;
+		view = address_space_get_flatview(as);
+		FOR_EACH_FLAT_RANGE(fr, view) {
+			if (fr->dirty_log_mask && (!mr || fr->mr == mr))
+			{
+				MemoryRegionSection mrs = section_from_flat_range(fr,view);
+				listener->log_sync(listener,&mrs);
+			}
+		}
+		flatview_unref(view);
+	}
+}
+
+DirtyBitmapSnapshot *memory_region_snapshot_and_clear_dirty(MemoryRegion *mr,
+		hwaddr addr, hwaddr size, unsigned client) {
+	assert(mr->ram_block);
+	memory_region_sync_dirty_bitmap(mr);
+	return cpu_physical_memory_snapshot_and_clear_dirty(
+			memory_region_get_ram_addr(mr) + addr, size, client);
+}
+
+bool memory_region_snapshot_get_dirty(MemoryRegion *mr, DirtyBitmapSnapshot *snap,
+		                              hwaddr addr, hwaddr size) {
+	assert(mr->ram_block);
+	return cpu_physical_memory_snapshot_get_dirty(snap,
+			memory_region_get_ram_addr(mr) + addr, size);
+}
+
+void memory_region_set_readonly(MemoryRegion *mr, bool readonly) {
+	if (mr->readonly != readonly)
+	{
+		memory_region_transaction_begin();
+		mr->readonly = readonly;
+		memory_region_update_pending |= mr->enabled;
+		memory_region_transaction_commit();
+	}
+}
+
+void memory_region_rom_device_set_romd(MemoryRegion *mr, bool romd_mode) {
+	if (mr->romd_mode != romd_mode)
+	{
+		memory_region_transaction_begin();
+		mr->romd_mode = romd_mode;
+		memory_region_update_pending |= mr->enabled;
+		memory_region_transaction_commit();
+	}
+}
+
+void memory_region_reset_dirty(MemoryRegion *mr, hwaddr addr, hwaddr size,
+		                       unsigned client) {
+	assert(mr->ram_block);
+	cpu_physical_memory_test_and_clear_dirty(
+			memory_region_get_ram_addr(mr) + addr, size, client);
+}
+
+int memory_region_get_fd(MemoryRegion *mr) {
+	int fd;
+	rcu_read_lock();
+	while (mr->alias)
+	{
+		mr = mr->alias;
+	}
+	fd = mr->ram_block->fd;
+	rcu_read_unlock();
+	return fd;
+}
+
+void *memory_region_get_ram_ptr(MemoryRegion *mr) {
+	void *ptr;
+	uint64_t offset = 0;
+	rcu_read_lock();
+	while (mr->alias)
+	{
+		offset += mr->alias_offset;
+		mr = mr->alias;
+	}
+	assert(mr->ram_block);
+	ptr = qemu_map_ram_ptr(mr->ram_block,offset);
+	rcu_read_unlock();
+	return ptr;
+}
+
+MemoryRegion *memory_region_from_host(void *ptr, ram_addr_t *offset) {
+	RAMBlock *block;
+	block = qemu_ram_block_from_host(ptr, false, offset);
+	if (!block)
+	{
+		return NULL;
+	}
+	return block->mr;
+}
+
+ram_addr_t memory_region_get_ram_addr(MemoryRegion *mr) {
+	return mr->ram_block ? mr->ram_block->offset : RAM_ADDR_INVALID;
+}
+
+void memory_region_ram_resize(MemoryRegion *mr, ram_addr_t newsize, Error **errp) {
+	assert(mr->ram_block);
+	qemu_ram_resize(mr->ram_block, newsize, errp);
+}
