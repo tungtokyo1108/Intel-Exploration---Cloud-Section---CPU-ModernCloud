@@ -1,4 +1,4 @@
-# Intel-Study---Hardware-Section---NEMU, a cloud hypervisor
+# Intel-Exploration---Hardware-Section---NEMU, a cloud hypervisor
 
 -----------------------------------------------------------------------------------------------------------------------------------------
 
