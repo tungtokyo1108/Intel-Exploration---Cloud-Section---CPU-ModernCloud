@@ -1838,3 +1838,170 @@ void memory_region_ram_resize(MemoryRegion *mr, ram_addr_t newsize, Error **errp
 	assert(mr->ram_block);
 	qemu_ram_resize(mr->ram_block, newsize, errp);
 }
+
+static void memory_region_update_coalesced_range_as(MemoryRegion *mr,
+		                                            AddressSpace *as) {
+	FlatView *view;
+	FlatRange *fr;
+	CoalescedMemoryRange *cmr;
+	AddrRange tmp;
+	MemoryRegionSection section;
+
+	view = address_space_get_flatview(as);
+	FOR_EACH_FLAT_RANGE(fr, view) {
+		if (fr->mr == mr)
+		{
+			section = (MemoryRegionSection) {
+				.fv = view,
+				.offset_within_address_space = int128_get64(fr->addr.start),
+				.size = fr->addr.size,
+			};
+
+			MEMORY_LISTENER_CALL(as, coalesced_mmio_del, Reverse, &section,
+					             int128_get64(fr->addr.start),
+								 int128_get64(fr->addr.size));
+			QTAILQ_FOREACH(cmr, &mr->colesced, link) {
+				tmp = addrrange_shift(cmr->addr,
+					  int128_sub(fr->addr.start, int128_make64(fr->offset_in_region)));
+				if (!addrrange_intersects(tmp, fr->addr))
+				{
+					continue;
+				}
+				tmp = addrrange_intersection(tmp,fr->addr);
+				MEMORY_LISTENER_CALL(as, coalesced_mmio_add, Forward, &section,
+						int128_get64(tmp.start), int128_get64(tmp.size));
+			}
+		}
+	}
+	flatview_unref(view);
+}
+
+static void memory_region_update_coalesced_range(MemoryRegion *mr) {
+	AddressSpace *as;
+	QTAILQ_FOREACH(as, &address_spaces, address_spaces_link) {
+		memory_region_update_coalesced_range_as(mr,as);
+	}
+}
+
+void memory_region_set_coalescing(MemoryRegion *mr) {
+	memory_region_clear_coalescing(mr);
+	memory_region_add_coalescing(mr,0,int128_get64(mr->size));
+}
+
+void memory_region_add_coalescing(MemoryRegion *mr, hwaddr offset, uint64_t size) {
+	CoalescedMemoryRange *cmr = g_malloc(sizeof(*cmr));
+	cmr->addr = addrrange_make(int128_make64(offset), int128_make64(size));
+	QTAILQ_INSERT_TAIL(&mr->colesced,cmr,link);
+	memory_region_update_coalesced_range(mr);
+	memory_region_set_flush_coalesced(mr);
+}
+
+void memory_region_clear_coalescing(MemoryRegion *mr) {
+	CoalescedMemoryRange *cmr;
+	bool updated = false;
+
+	qemu_flush_coalesced_mmio_buffer();
+	mr->flush_coalesced_mmio = false;
+
+	while (!QTAILQ_EMPTY(&mr->colesced))
+	{
+		cmr = QTAILQ_FIRST(&mr->colesced);
+		QTAILQ_REMOVE(&mr->colesced, cmr, link);
+		g_free(cmr);
+		updated = true;
+	}
+	if (updated)
+	{
+		memory_region_update_coalesced_region(mr);
+	}
+}
+
+void memory_region_set_flush_coalesced(MemoryRegion *mr) {
+	mr->flush_coalesced_mmio = true;
+}
+
+void memory_region_clear_flush_coalesced(MemoryRegion *mr) {
+	qemu_region_coalesced_mmio_buffer();
+	if (QTAILQ_EMPTY(&mr->colesced))
+	{
+		mr->flush_coalesced_mmio = false;
+	}
+}
+
+void memory_region_clear_global_locking(MemoryRegion *mr) {
+	mr->global_locking = false;
+}
+
+static bool userspace_eventfd_warning;
+
+void memory_region_add_eventfd(MemoryRegion *mr, hwaddr addr, unsigned size,
+		bool match_data, uint64_t data, EventNotifier *e) {
+	MemoryRegionIoeventfd mrfd = {
+			.addr.start = int128_make64(addr),
+			.addr.size = int128_make64(size),
+			.match_data = match_data,
+			.data = data,
+			.e = e,
+	};
+	unsigned i;
+
+	if (kvm_enabled() && (!kvm_eventfds_enabled() || userspace_eventfd_warning))
+	{
+		userspace_eventfd_warning = true;
+		error_report("Using eventfd without MMIO binding in KVM."
+				     "Suboptimal performance expected");
+	}
+
+	if (size) {
+		adjust_endianness(mr, &mrfd.data, size);
+	}
+
+	memory_region_transaction_begin();
+	for (i=0; i < mr->ioventfd_nb; ++i)
+	{
+		if (memory_region_ioventfd_before(&mrfd, &mr->ioventfd_nb))
+		{
+			break;
+		}
+	}
+	++mr->ioventfd_nb;
+	mr->ioeventfds = g_malloc(mr->ioeventfds,
+			sizeof(*mr->ioeventfds) * mr->ioventfd_nb);
+	memmove(&mr->ioeventfds[i+1], &mr->ioeventfds[i],
+			sizeof(*mr->ioeventfds) * (mr->ioventfd_nb - 1 - i));
+	mr->ioeventfds[i] = mrfd;
+	ioeventfd_update_pending |= mr->enabled;
+	memory_region_transaction_commit();
+}
+
+void memory_region_del_eventfd(MemoryRegion *mr, hwaddr addr, unsigned size,
+		bool match_data, uint64_t data, EventNotifier *e) {
+	MemoryRegionIoeventfd mrfd = {
+			.addr.start = int128_make64(addr),
+			.addr.size = int128_make64(size),
+			.match_data = match_data,
+			.data = data,
+			.e = e,
+	};
+	unsigned i;
+	if (size)
+	{
+		adjust_endianness(mr, &mrfd.data, size);
+	}
+	memory_region_transaction_begin();
+	for (i = 0; i < mr->ioventfd_nb; ++i)
+	{
+		if (memory_region_ioeventfd_equal(&mrfd,&mr->ioeventfds[i]))
+		{
+			break;
+		}
+	}
+	assert(i != mr->ioventfd_nb);
+	memmove(&mr->ioeventfds[i], &mr->ioeventfds[i+1],
+			sizeof(*mr->ioeventfds) * (mr->ioventfd_nb - (i+1)));
+	--mr->ioventfd_nb;
+	mr->ioeventfds = g_malloc(mr->ioeventfds,
+			sizeof(*mr->ioeventfds)*mr->ioventfd_nb + 1);
+	ioeventfd_update_pending |= mr->enabled;
+	memory_region_transaction_commit();
+}
