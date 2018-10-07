@@ -2005,3 +2005,78 @@ void memory_region_del_eventfd(MemoryRegion *mr, hwaddr addr, unsigned size,
 	ioeventfd_update_pending |= mr->enabled;
 	memory_region_transaction_commit();
 }
+
+static void memory_region_update_container_subregions(MemoryRegion *subregion) {
+	MemoryRegion *mr = subregion->container;
+	MemoryRegion *other;
+
+	memory_region_ref(subregion);
+	QTAILQ_FOREACH(other, &mr->subregions, subregions_link) {
+		if (subregion->priority >= other->priority) {
+			QTAILQ_INSERT_BEFORE(other,subregion,subregion_link);
+			goto done;
+		}
+	}
+
+	QTAILQ_INSERT_TAIL(&mr->subregions, subregion, subregions_link);
+	done:
+	memory_region_update_pending |= mr->enabled && subregion->enabled;
+	memory_region_transaction_commit();
+}
+
+static void memory_region_add_subregion_common(MemoryRegion *mr, hwaddr addr,
+		                                       MemoryRegion *subregion) {
+	assert(!subregion->container);
+	subregion->container = mr;
+	subregion->addr = addr;
+	memory_region_update_container_subregions(subregion);
+}
+
+void memory_region_add_subregion(MemoryRegion *mr, hwaddr offset,
+		                         MemoryRegion *subregion) {
+	subregion->priority = 0;
+	memory_region_add_subregion_common(mr,offset,subregion);
+}
+
+void memory_region_add_subregion_overlap(MemoryRegion *mr, hwaddr offset,
+		                                 MemoryRegion *subregion, int priority) {
+	subregion->priority = priority;
+	memory_region_add_subregion_common(mr,offset,subregion);
+}
+
+void memory_region_del_subregion(MemoryRegion *mr, MemoryRegion *subregion) {
+	memory_region_transaction_begin();
+	assert(subregion->container == mr);
+	subregion->container = NULL;
+	QTAILQ_REMOVE(&mr->subregions, subregion, subregions_link);
+	memory_region_unref(subregion);
+	memory_region_update_pending |= mr->enabled && subregion->enabled;
+	memory_region_transaction_commit();
+}
+
+void memory_region_set_enabled(MemoryRegion *mr, bool enabled) {
+	if (enabled == mr->enabled)
+	{
+		return;
+	}
+	memory_region_transaction_begin();
+	mr->enabled = enabled;
+	memory_region_update_pending = true;
+	memory_region_transaction_commit();
+}
+
+void memory_region_set_size(MemoryRegion *mr, uint64_t size) {
+	Int128 s = int128_make64(size);
+	if (size == UINT64_MAX)
+	{
+		s = int128_2_64();
+	}
+	if (int128_eq(s,mr->size))
+	{
+		return;
+	}
+	memory_region_transaction_begin();
+	mr->size = s;
+	memory_region_update_pending = true;
+	memory_region_transaction_commit();
+}
