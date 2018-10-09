@@ -151,7 +151,7 @@ typedef struct CPUState {
     bool thread_kicked;
     bool created; // Indicates whether the CPU thread has been successfully created
     bool stop; // Indicate a pending stop request
-    bool stopped;
+    bool stopped; // Indicates the CPU has been artificially stopped
     bool unplug; // Indicate a pending CPU unplug request.
     bool crash_occurred; // Indicate the OS reported a crash for this CPU
     bool exit_request;
