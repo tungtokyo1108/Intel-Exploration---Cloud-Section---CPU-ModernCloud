@@ -186,6 +186,11 @@ typedef struct CPUState {
 
     int cpu_index;
     uint32_t halted;
+    /*
+     * Nonzero if memory-mapped IO is safe.
+     * Deterministic execution requires that IO only be performed on the last instruction of a TB
+     * so that interrupts take effect immediately
+     */
     uint32_t can_do_io;
     int32_t exception_index;
 
@@ -193,6 +198,11 @@ typedef struct CPUState {
     bool throttle_thread_sheduled;
     bool ignore_memory_transaction_failtures;
 
+    /*
+     * - Low 16 bits: number of cycles left, only used in icount mode
+     * - High 16 bits: Set to -1 to force TCG to stop executing linked TBs
+     *   for this CPU and return to its top level loop
+     */	
     union {
     	uint32_t u32;
     	icount_decr_u16 u16;
