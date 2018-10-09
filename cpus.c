@@ -283,6 +283,7 @@ int64_t cpu_get_icount(void) {
 	return icount;
 }
 
+
 int64_t cpu_icount_to_ns(int64_t icount) {
 	return icount << icount_time_shift;
 }
