@@ -375,33 +375,41 @@ void cpu_disable_ticks(void) {
 #define ICOUNT_WOBBLE (NANOSECONDS_PER_SECOND / 10)
 
 static void icount_adjust(void) {
-	int64_t cur_time;
-	int64_t cur_icount;
-	int64_t delta;
+	int64_t cur_time;     // Real time
+	int64_t cur_icount;   // Virtual time
+	int64_t delta;        // Variable measure the correlation between real and virtual
 
+	// Proteced by TimersState mutex
 	static int64_t last_delta;
-	if (!runstate_is_running())
-	{
+
+	// If the Virtual Machine is not running, then do nothing
+	if (!runstate_is_running) {
 		return;
 	}
 
 	seqlock_write_begin(&timers_state.vm_clock_seqlock);
 	cur_time = cpu_get_clock_locked();
 	cur_icount = cpu_get_icount_locked();
-	delta = cur_icount - cur_time;
-	if (delta > 0 && last_delta + ICOUNT_WOBBLE < delta * 2
-			      && icount_time_shift > 0)
-	{
+	delta = cur_time - cur_icount;
+
+	// The guest is getting too far ahead. Slow time down
+	if (delta > 0
+		&& last_delta + ICOUNT_WOBBLE < delta * 2
+		&& icount_time_shift > 0) {
 		icount_time_shift--;
 	}
-	if (delta < 0 && last_delta - ICOUNT_WOBBLE > delta * 2
-			      && icount_time_shift < MAX_ICOUNT_SHIFT)
-	{
+
+	// The guest is getting too far behind. Speed time up
+	if (delta < 0
+		&& last_delta + ICOUNT_WOBBLE > delta * 2
+		&& icount_time_shift < MAX_ICOUNT_SHIFT) {
 		icount_time_shift++;
 	}
+
 	last_delta = delta;
-	timers_state.qemu_icount_bias = cur_icount
-			- (timers_state.qemu_icount << icount_time_shift);
+	timers_state.qemu_icount_bias =
+	cur_icount - (timers_state.qemu_icount << icount_time_shift);
+
 	seqlock_write_end(&timers_state.vm_clock_seqlock);
 }
 
