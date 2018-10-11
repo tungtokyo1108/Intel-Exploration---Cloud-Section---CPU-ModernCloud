@@ -498,11 +498,17 @@ void qemu_start_warp_timer(void) {
 		return;
 	}
 
+	/*
+	 * Nothing to do if the VM stopped:
+	 * QEMU_CLOCK_VIRTUAL timers do not fire,
+	 * so computing the deadline does not make sense.
+	 */
+
 	if (!runstate_is_running()) {
 		return;
 	}
 
-	// warp clock deterministically in record/replay mode
+	// wrap clock deterministically in record/replay mode
 	if (!replay_checkpoint(CHECKPOINT_CLOCK_WARP_START)) {
 		return;
 	}
@@ -511,11 +517,11 @@ void qemu_start_warp_timer(void) {
 		return;
 	}
 
+	// When testing, qtest commands advance icount
 	if (qtest_enabled()) {
 		return;
 	}
 
-	// Want to use the earliest deadline from ALL vm_clocks
 	clock = qemu_clock_get_ns(QEMU_CLOCK_VIRTUAL_RT);
 	deadline = qemu_clock_deadline_ns_all(QEMU_CLOCK_VIRTUAL);
 	if (deadline < 0)
@@ -533,13 +539,18 @@ void qemu_start_warp_timer(void) {
 	{
 		/*
 		 * Ensure QEMU_CLOCK_VIRTUAL proceeds even when the virtual CPU goes to sleep
+		 * Otherwise, the CPU might be waiting for a future timer interrupt to wake it up
 		 */
+
 		if (!icount_sleep)
 		{
 			/*
-			 * Never let VCPU sleep in no sleep icount mode.
+			 * Never let Virtual CPU sleeps in no sleep icount mode
 			 * If there is a pending QEMU_CLOCK_VIRTUAL timer we just advance
 			 * to the next QEMU_CLOCK_VIRTUAL event and notify it.
+			 *
+			 * Goal: it is useful when we want to deterministic execution time,
+			 *       isolated from host latencies.
 			 */
 			seqlock_write_begin(&timers_state.vm_clock_seqlock);
 			timers_state.qemu_icount_bias += deadline;
@@ -549,25 +560,21 @@ void qemu_start_warp_timer(void) {
 		else
 		{
 			/*
-			 * Do stop VCPU and only advance QEMU_CLOCK_VIRTUAL after some
-			 * "real" time, has passed.
+			 * Stop Virtual CPU and only advance QEMU_CLOCK_VIRTUAL after some real time
+			 * The QEMU_CLOCK_VIRTUAL_RT clock will do this
 			 * This avoids that the warps are visible externally
-			 * For example, not be sending network packets continuously
-			 * instead of every 100ms
+			 * For example, you will not be sending network packets continuously
+			 * instead of every 100ms.
 			 */
-
 			seqlock_write_begin(&timers_state.vm_clock_seqlock);
-		    if (timers_state.vm_clock_warp_start == -1
-		        || timers_state.vm_clock_warp_start > clock)
-		    {
-		    	timers_state.vm_clock_warp_start = clock;
-		    }
-		    seqlock_write_end(&timers_state.vm_clock_seqlock);
-		    timer_mod_anticipate(timers_state.icount_warp_timer, clock + deadline);
+			if (timers_state.vm_clock_warp_start == -1
+			    || timers_state.vm_clock_warp_start > clock) {
+				timers_state.vm_clock_warp_start = clock;
+			}
+			seqlock_write_end(&timers_state.vm_clock_seqlock);
+			timer_mod_anticipate(timers_state.icount_warp_timer, clock + deadline);
 		}
-	}
-	else if (deadline == 0)
-	{
+	} else if (deadline == 0) {
 		qemu_clock_notify(QEMU_CLOCK_VIRTUAL);
 	}
 }
