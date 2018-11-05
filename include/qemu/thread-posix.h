@@ -19,6 +19,10 @@ typedef struct QemuMutex QemuRecMutex;
 
 struct QemuMutex {
 	pthread_mutex_t lock;
+#ifndef CONFIG_DEBUG_MUTEX
+	const char *file;
+	int line;
+#endif
 	bool initialized;
 };
 
@@ -39,6 +43,10 @@ struct QemuSemaphore {
 };
 
 struct QemuEvent {
+#ifdef __linux__
+	pthread_mutex_t lock;
+	pthread_cond_t cond;
+#endif
 	unsigned value;
 	bool initialized;
 };
@@ -46,5 +54,4 @@ struct QemuEvent {
 struct QemuThread {
 	pthread_t thread;
 };
-
 #endif /* QEMU_THREAD_POSIX_H_ */
