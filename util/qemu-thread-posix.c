@@ -384,3 +384,164 @@ void qemu_event_destroy(QemuEvent *ev)
 #endif
 }
 
+void qemu_event_set(QemuEvent *ev)
+{
+	assert(ev->initialized);
+	smp_mb();
+	if (atomic_read(&ev->value) != EV_SET)
+	{
+		if (atomic_xchg(&ev->value, EV_SET) == EV_BUSY)
+		{
+			qemu_futex_wake(ev, INT_MAX);
+		}
+	}
+}
+
+void qemu_event_reset(QemuEvent *ev)
+{
+	unsigned value;
+	assert(ev->initialized);
+	value = atomic_read(&ev->value);
+	smp_mb_acquire();
+	if (value == EV_SET)
+	{
+		atomic_or(&ev->value, EV_FREE);
+	}
+}
+
+void qemu_event_wait(QemuEvent *ev)
+{
+	unsigned value;
+	assert(ev->initialized);
+	value = atomic_read(&ev->value);
+	if (value != EV_SET)
+	{
+		if (value == EV_FREE)
+		{
+			if (atomic_cmpxchg(&ev->value, EV_FREE, EV_BUSY) == EV_SET)
+			{
+				return;
+			}
+		}
+		qemu_futex_wait(ev,EV_BUSY);
+	}
+}
+
+static pthread_key_t exit_key;
+
+union NotifierThreadData {
+	void *ptr;
+	NotifierList list;
+};
+
+QEMU_BUILD_BUG_ON(sizeof(union NotifierThreadData) != sizeof(void *));
+
+void qemu_thread_atexit_add(Notifier *notifier)
+{
+	union NotifierThreadData ntd;
+	ntd.ptr = pthread_getspecific(exit_key);
+	notifier_list_add(&ntd.list, notifier);
+	pthread_setspecific(exit_key, ntd.ptr);
+}
+
+void qemu_thread_atexit_remove(Notifier *notifier)
+{
+	union NotifierThreadData ntd;
+	ntd.ptr = pthread_getspecfic(exit_key);
+	notifier_remove(notifier);
+	pthread_setspecific(exit_key, ntd.ptr);
+}
+
+static void qemu_thread_atexit_run(void *arg)
+{
+	union NotifierThreadData ntd = {.ptr = arg};
+	notifier_list_notify(&ntd.list,NULL);
+}
+
+static void __attribute__((constructor)) qemu_thread_atexit_init(void)
+{
+	pthread_key_create(&exit_key, qemu_thread_atexit_run);
+}
+
+typedef struct {
+	void *(*start_routine)(void *);
+	void *arg;
+	void *name;
+} QemuThreadArgs;
+
+static void *qemu_thread_start(void *args)
+{
+	QemuThreadArgs *qemu_thread_args = args;
+	void *(*start_routine)(void *) = qemu_thread_args->start_routine;
+	void *arg = qemu_thread_args->arg;
+
+#ifdef CONFIG_PTHREAD_SETNAME_NP
+	if (name_threads && qemu_thread_args->name) {
+	        pthread_setname_np(pthread_self(), qemu_thread_args->name);
+	}
+#endif
+	g_free(qemu_thread_args->name);
+	g_free(qemu_thread_args);
+	return start_routine(arg);
+}
+
+void qemu_thread_get_seft(QemuThread *thread)
+{
+	thread->thread = pthread_self();
+}
+
+bool qemu_thread_is_self(QemuThread *thread)
+{
+	return pthread_equal(pthread_self(), thread->thread);
+}
+
+void qemu_thread_exit(void *retval)
+{
+	pthread_exit(retval);
+}
+
+void *qemu_thread_join(QemuThread* thread)
+{
+	int err;
+	void *ret;
+	err = pthread_join(thread->thread, &ret);
+	if (err)
+	{
+		error_exit(err, __func__);
+	}
+	return ret;
+}
+
+void qemu_thread_create(QemuThread *thread, const char *name,
+		                void *(*start_routine)(void *), void *arg, int mode)
+{
+	sigset_t set, oldset;
+	int err;
+	pthread_attr_t attr;
+	QemuThreadArgs *qemu_thread_args;
+
+	err = pthread_attr_init(&attr);
+	if (err)
+	{
+		error_exit(err, __func__);
+	}
+
+	if (mode == QEMU_THREAD_DETACHED)
+	{
+		pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	}
+	sigfillset(&set);
+	pthread_sigmask(SIG_SETMASK, &set, &oldset);
+
+	qemu_thread_args = g_new0(QemuThreadArgs, 1);
+	qemu_thread_args->name = g_strdup(name);
+	qemu_thread_args->start_routine = start_routine;
+	qemu_thread_args->arg = arg;
+
+	err = pthread_create(&thread->thread, &attr, qemu_thread_start, qemu_thread_args);
+	if (err)
+		error_exit(err, __func__);
+
+	pthread_sigmask(SIG_SETMASK, &oldset, NULL);
+	pthread_attr_destroy(&attr);
+}
