@@ -1,8 +1,9 @@
 /*
  * object.h
+ * https://github.com/intel/nemu/blob/topic/virt-x86/include/qom/object.h
  *
  *  Created on: Sep 2, 2018
- *      Student (coder): Tung Dang
+ *      Student (MIG Virtual Developer): Tung Dang
  */
 
 #ifndef QOM_OBJECT_H_
@@ -29,6 +30,21 @@ typedef struct QEnumLookup QEnumLookup;
 
 #define TYPE_OBJECT "object"
 
+/*
+* Interfaces for creating new types and objects.
+* 
+* Goals: Provides a framework for registering user creable types and instantiating objects from those types.
+* Main features:
+* - System for dynamically registering types.
+* - Support for single-inheritance of types
+* - Multiple inheritance of stateless interfaces. 
+* 
+* A new #Object derivative will be instantiated. 
+* An #Object is casted to a subclass type using object_dynamic_cast(). 
+* Macro wrappers should be defined around OBJECT_CHECK() and OBJECT_CLASS_CHECK()
+* to make it easier to convert to specific type. 
+*/
+
 // Called when trying to get/set a property
 typedef void (ObjectPropertyAccessor)(Object *obj, Visitor *v, const char *name, void *opaque, Error **errp);
 
@@ -44,7 +60,7 @@ typedef struct OjectProperty {
 	gchar *desciption;
 	ObjectPropertyAccessor *get;
 	ObjectPropertyAccessor *set;
-	ObjectPropertyAccessor *resole;
+	ObjectPropertyAccessor *resolve;
 	ObjectPropertyAccessor *release;
 	void *opaque;
 } OjectProperty;
@@ -52,6 +68,20 @@ typedef struct OjectProperty {
 typedef void (ObjectUnparent)(Object *obj); // when object is being removed from the composition tree
 typedef void (ObjectFree)(void *obj); // when an object's last reference is removed
 #define OBJECT_CLASS_CAST_CACHE 4
+
+/*
+* The ObjectClass derivatives 
+* - are instantiated dynamically but there is only ever one instance for any given type.
+* - typically holds a table of function pointers for the virtual methods implemented by this type.  
+* - Before an object is initialized, the class for the object must be initialized. 
+*   There is only one class object for all instance objects that is created. 
+* - Classses are initialized by first initializing any parent classes. 
+*   After the parent class object has initialized, it will be copied into the current class object 
+*   and any additional storage in the class object is zero filled. 
+* - The effect of this is that classes automatically inherit any virtual function pointers 
+* - Introducing new virtual methods requires a class to define its own struct 
+*   and to add a .class_size member to the #TypeInfo. 
+*/
 
 typedef struct ObjectClass {
 	Type type;
@@ -62,7 +92,7 @@ typedef struct ObjectClass {
 	GHashTable *properties;
 } ObjectClass;
 
-struct Oject {
+struct Object {
 	ObjectClass *clas;
 	ObjectFree *free;
 	GHashTable *properties;
@@ -70,11 +100,16 @@ struct Oject {
 	Object *parent;
 };
 
+/*
+* TypeInfo describes information about the type including what it inherits from,
+* the instance and class size, and constructor/destructor hooks.
+*/
+
 typedef struct TypeInfo {
 	const char *name;
 	const char *parent;
 	size_t instance_size;
-	void (*instance_init)(Oject *obj);
+	void (*instance_init)(Object *obj);
 	void (*instance_post_init)(Object *obj);
 	void (*instance_finalize)(Object *obj);
 
@@ -107,6 +142,13 @@ typedef struct TypeInfo {
 // To provide a type safe macro to get a specific class type from an object
 #define OBJECT_GET_CLASS(class, obj, name) \
 	OBJECT_CLASS_CHECK(class, object_get_class(OBJECT(obj)),name)
+
+/* Interface 
+* - Allow a limited form of multiple inheritance. 
+* - Instance are similar to normal types except for the fact that are only defined bt their classes
+*   and never carry any state. 
+* - can dynamically cast an object to one of its #Interface types and vice versa. 
+*/
 
 typedef struct InterfaceInfo {
 	const char *type;
