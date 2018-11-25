@@ -30,7 +30,7 @@ typedef struct QEnumLookup QEnumLookup;
 
 #define TYPE_OBJECT "object"
 
-/*
+/**
 * Interfaces for creating new types and objects.
 * 
 * Goals: Provides a framework for registering user creable types and instantiating objects from those types.
@@ -93,31 +93,70 @@ typedef struct ObjectClass {
 } ObjectClass;
 
 struct Object {
-	ObjectClass *clas;
+	ObjectClass *class;
 	ObjectFree *free;
 	GHashTable *properties;
 	uint32_t ref;
 	Object *parent;
 };
 
-/*
-* TypeInfo describes information about the type including what it inherits from,
-* the instance and class size, and constructor/destructor hooks.
-*/
+/**
+ * TypeInfo describes information about the type including what it inherits from,
+   the instance and class size, and constructor/destructor hooks.
+ */
 
 typedef struct TypeInfo {
 	const char *name;
 	const char *parent;
+	/**
+	 * The size of the object. 
+	 * If instance_size is 0, the size of object will be the size of parent object.
+	*/
 	size_t instance_size;
+	/**
+	 * This function is called to initialize an object.
+	 * The parent class will have already been initialized so the type is only responsible
+	   for initializing its own members. 
+	 */
 	void (*instance_init)(Object *obj);
+	/**
+	 * This function is called to finish initialization of an object.
+	*/
 	void (*instance_post_init)(Object *obj);
+	/**
+	 * This function is called during object destruction. 
+	 * An object should only free the members that are unique to its type in this function. 
+	*/
 	void (*instance_finalize)(Object *obj);
 
 	bool abstract;
+	/**
+	 * The size of the class object for this object. 
+	 * If @class_size is 0, then the size of the class will be assumed to be size of parent class. 
+	 * This allows a type to avoid implementing an explicit class type 
+	   if they are not adding additional virtual functions.  
+	*/
 	size_t class_size;
+	/**
+	 * This function is called after all parent class initialization has ocurred to allow a class 
+	   and to set its default virtual method pointers 
+	   and to override virtual methods from a parent clss.  
+	*/
 	void (*class_init)(ObjectClass *kclass, void *data);
+	/**
+	 * This function is called for all base classes after all parent class initialization has occurred. 
+	 * This is the function to use to undo the effects of memcpy from the parent class to the descendants. 
+	*/
 	void (*class_base_init)(ObjectClass *kclass, void *data);
+	/**
+	 * This function is called during class destruction 
+	   and is meant to realese and dynamic parameters allocated by @class_init.  
+	*/
 	void (*class_finalize)(ObjectClass *kclass, void *data);
+	/**
+	 * Data to pass to the @class_init, @class_base_init and @class_finilize_functions.
+	 * Can be useful when building dynamic classes. 
+	*/
 	void *class_data;
 
 	InterfaceInfo *interfaces;
@@ -131,7 +170,12 @@ typedef struct TypeInfo {
 #define OBJECT_CLASS(class)\
 	((ObjectClass *)(class))
 
-// Each class will define a macro based on this type to perform type safe dynamic_casts to this object type
+/**
+ * Each class will define a macro based on this type to perform type safe dynamic_casts to this object type
+ * @type: The class type to use for the return value
+ * @obj: A derivative of @type to cast
+ * @name: The QOM typename of @type
+*/
 #define OBJECT_CHECK(type,obj,name) \
 	((type *)object_dynamic_cast_assert(OBJECT(obj),(name), __FILE__, __LINE__, __func__))
 
@@ -165,23 +209,54 @@ typedef struct InterfaceClass {
 #define INTERFACE_CLASS(kclass) \
 	OBJECT_CLASS_CHECK(InterfaceClass, kclass, TYPE_INTERFACE)
 
+/**
+ * @interface: the type to return
+ * @obj: the object to convert to an interface 
+ * @name: the interface type name 
+*/
 #define INTERFACE_CHECK(interface,obj,name) \
 	((interface *)object_dynamic_cast_assert(OBJECT((obj)), (name), __FILE__, __LINE__, __func__))
 
-// this function will initialize a new object using heap allocated memory
+/**
+ * This function will initialize a new object using heap allocated memory
+ * The returned object has a reference count of 1, and will be freed when 
+   the last reference is dropped.
+*/
 Object *object_new(const char *type_name);
+/**
+ * @id: will be used when registering the object as a child of @parent in the composition tree.
+*/
 Object *object_new_with_props(const char *type_name, Object *parent, const char *id, Error **errp, ...) QEMU_SENTINEL;
 Object *object_new_with_propv(const char *type_name, Object *parent, const char *id, Error **errp, va_list vargs);
 
+/**
+ * This function will set a list of properties on an existing object instance.
+*/
 int object_set_props(Object *obj, Error **errp, ...) QEMU_SENTINEL;
 int object_set_propv(Object *obj, Error **errp, va_list vargs);
 
+/**
+ * @obj: A pointer to the memory to be used for the object. 
+ * @size: The maximum size available at @obj for the object.
+ * @typename: The name of the type of the object to instantiate. 
+ * 
+ * This function will initialize an object. 
+ * The memory for object should be have already been allocated.
+ * The returned object has a reference count of 1, and will be finalized when last reference is dropped. 
+ */
 void object_initialize(void *obj, size_t size, const char *type_name);
+/**
+ * The object will then be added as child property to a parent will object_property_add_child function.
+*/
 void object_initialize_child(Object *parentobj, const char *propname,
                              void *childobj, size_t size, const char *type, Error **errp, ...) QEMU_SENTINEL;
 void object_initialize_childv(Object *parentobj, const char *propname,
                               void *childobj, size_t size, const char *type, Error **errp, va_list vargs);
 
+/**
+ * This function will determine if @obj is a @typename.
+ * @obj can refer to an object or an interface associated with an object.
+*/
 Object *object_dynamic_cast(Object *obj, const char *type_name);
 Object *object_dynamic_cast_assert(Object *obj, const char *type_name, const char *file, int line, const char *func);
 ObjectClass *object_get_class(Object *obj);
