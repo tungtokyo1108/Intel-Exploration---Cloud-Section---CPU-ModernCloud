@@ -1053,6 +1053,17 @@ static void qemu_wait_io_event(CPUState *cpu) {
 
 }
 
+/**
+ * ************************* Hypervisor Platform Accelerator Support ******************************
+ * 
+ * Depending on the target architecture, kvm, hax, hvf, whpx and tcg can be available.
+ * By default, tcg is used. 
+ * Controls number of TCG threads. When the TCG is multi-threaded there wull be one thread per VCPU
+ * therefor taking advantage of additional host cores. 
+ * The default is to enable multi-threading where both the back-end and front-ends support it 
+ * and no imcompatible TCG features have been enabled.
+*/
+
 static void *qemu_kvm_cpu_thread_fn(void *arg) {
 	CPUState *cpu = arg;
 	int r;
@@ -1791,6 +1802,10 @@ void qemu_init_vcpu(CPUState *cpu) {
 		qemu_cond_wait(&qemu_cpu_cond, &qemu_global_mutex);
 	}
 }
+
+/**
+ * *************************************************************************************************
+*/
 
 void cpu_stop_current(void) {
 	if (current_cpu)
