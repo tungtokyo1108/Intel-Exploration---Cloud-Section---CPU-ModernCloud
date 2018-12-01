@@ -1054,14 +1054,56 @@ static void qemu_wait_io_event(CPUState *cpu) {
 }
 
 /**
- * ************************* Hypervisor Platform Accelerator Support ******************************
+ * ****************************** Hardware Accelerator Support *************************************
  * 
- * Depending on the target architecture, kvm, hax, hvf, whpx and tcg can be available.
- * By default, tcg is used. 
- * Controls number of TCG threads. When the TCG is multi-threaded there wull be one thread per VCPU
- * therefor taking advantage of additional host cores. 
- * The default is to enable multi-threading where both the back-end and front-ends support it 
- * and no imcompatible TCG features have been enabled.
+ * - Speed up emulation of x86 or x86-64 guests on platforms with the same CPU architecture.
+ * - This worked by running user mode code (and optionally some kernel code) directly 
+ *   on the host computer's CPU, and by using processor and peripheral emulation only 
+ *   for kernel-mode and real-mode code.
+ * - Depending on the target architecture, kvm, hax, hvf, whpx and tcg can be available.
+ *   By default, tcg is used. Controls number of TCG threads. 
+ *   When the TCG is multi-threaded there wull be one thread per VCPU 
+ *   therefor taking advantage of additional host cores. 
+ *   The default is to enable multi-threading where both the back-end and front-ends support it 
+ *   and no imcompatible TCG features have been enabled.
+ * - https://www.qemu.org/2018/02/09/understanding-qemu-devices/
+*/
+
+/**
+ * ****************** Kernel-based Virtual Machine Accelerator (KVM) *******************************
+ * 
+ * - is an open source virtualization technology built into Linux.
+ * - lets you turn Linux into a hypervisor that allows a host machine to run multiple, 
+ *   isolated virtual environments called guests or virtual machines (VMs).
+ * - converts Linux into a type-1 (bare-metal) hypervisor. 
+ * - All hypervisors need some operating system-level components—such as 
+ *   + Memory manager: including non-uniform memory access and kernel same-page merging.
+ *     The memory of a VM can be swapped, backed by large volumes for better performance, 
+ *     and shared or backed by a disk file. 
+ *   + Security manager: uses a combination of security-enhanced Linux (SELinux) 
+ *     and secure virtualization (sVirt) for enhanced VM security and isolation. 
+ *     SELinux establishes security boundaries around VMs. sVirt extends SELinux’s capabilities, 
+ *     allowing Mandatory Access Control (MAC) security to be applied to guest VMs 
+ *     and preventing manual labeling errors.
+ *   + Storage: including some local disks and network-attached storage (NAS).
+ *     Multipath I/O may be used to improve storage and provide redundancy. 
+ *     KVM also supports shared file systems so VM images may be shared by multiple hosts.
+ *     Disk images support thin provisioning, allocating storage on demand rather than all up front.
+ *   + Process scheduler: a VM is a Linux process, scheduled and managed by the kernel.
+ *     The Linux scheduler allows fine-grained control of the resources allocated to a Linux process 
+ *     and guarantees a quality of service for a particular process. In KVM, this includes 
+ *     the completely fair scheduler, control groups, network name spaces, and real-time extensions.
+ *   + Performance and scalability: inherits the performance of Linux, scaling to match demand load 
+ *     if the number of guest machines and requests increases. 
+ *     KVM allows the most demanding application workloads to be virtualized 
+ *     and is the basis for many enterprise virtualization setups, 
+ *     such as datacenters and private clouds (via OpenStack®).                
+ * - has all these components because it’s part of the Linux kernel.  
+ *   Every VM is implemented as a regular Linux process, scheduled by the standard Linux scheduler,
+ *   with dedicated virtual hardware like a network card, graphics adapter, CPU(s), memory, and disks.
+ * - https://www.redhat.com/en/topics/virtualization/what-is-KVM# 
+ * 
+ * ***********************************************************************************************
 */
 
 static void *qemu_kvm_cpu_thread_fn(void *arg) {
@@ -1246,6 +1288,16 @@ static void deal_with_unplugged_cpus(void) {
 	}
 }
 
+/**
+ * *********************************** TCG Accelerator *********************************************
+ * 
+ * - takes the guest assembly instructions and compiles it on the fly into comparable host instructions 
+ *   or calls to host helper routines, while not as fast as hardware acceleration, 
+ *   it allows cross-hardware emulation, such as running ARM code on x86. 
+ * 
+ * *************************************************************************************************
+*/
+
 /*
  * In the single-threaded case each vCPU is simulated in turn.
  * If there is more than a single vCPU, a simple timer will be created
@@ -1347,6 +1399,19 @@ static void *qemu_tcg_rr_cpu_thread_fn(void *arg) {
 	return NULL;
 }
 
+/**
+ * *************** Intel Hardware Accelerated Execution Manager Accelerator (HAXM) *****************
+ * 
+ * - is a hardware-assisted virtualization engine (hypervisor) that uses Intel® Virtualization Technology (Intel® VT) 
+ *   to speed up Android* app emulation on a host machine.
+ * - Intel HAXM allows for faster Android emulation on Intel VT enabled systems, in combination with 
+ *   "Android x86 emulator images" provided by Intel and the official "Android SDK Manager". 
+ * - https://software.intel.com/en-us/articles/intel-hardware-accelerated-execution-manager-intel-haxm?page=1
+ * - https://github.com/intel/haxm
+ * 
+ * ************************************************************************************************
+*/
+
 static void *qemu_hax_cpu_thread_fn(void *arg) {
 	CPUState *cpu = arg;
 	int r;
@@ -1377,6 +1442,20 @@ static void *qemu_hax_cpu_thread_fn(void *arg) {
 	rcu_unregister_thread();
 	return NULL;
 }
+
+/**
+ * *************************** Hypervisor Framework Accelerator (HVF) *****************************
+ * 
+ * - Provides C APIs for interacting with virtualization technologies in user-space, 
+ *   without the need for writing kernel extensions (KEXTs). As a result, apps created using 
+ *   this framework are suitable for distribution on the Mac App Store.
+ * - Hardware-facilitated virtual machines (VMs) and virtual processors (vCPUs) can be created and 
+ *   controlled by an entitled sandboxed user space process, the hypervisor client. 
+ *   The Hypervisor framework abstracts virtual machines as tasks and virtual processors as threads.
+ * - https://developer.apple.com/documentation/hypervisor 
+ * 
+ * *************************************************************************************************
+*/
 
 /*
  * The HVF-specific vCPU thread function
@@ -1419,6 +1498,17 @@ static void *qemu_hvf_cpu_thread_fn(void *arg) {
 	rcu_unregister_thread();
 	return NULL;
 }
+
+/**
+ * ************************* Windows Hypervisor Platform Accelerator (WHPX) *************************
+ * 
+ * - adds an extended user-mode API for third-party virtualization stacks and applications to create 
+ *   and manage partitions at the hypervisor level, configure memory mappings for the partition, 
+ *   and create and control execution of virtual processors.
+ * - https://docs.microsoft.com/en-us/virtualization/api/hypervisor-platform/hypervisor-platform
+ * 
+ * *************************************************************************************************
+*/
 
 static void *qemu_whpx_cpu_thread_fn(void *arg) {
 	CPUState *cpu = arg;
