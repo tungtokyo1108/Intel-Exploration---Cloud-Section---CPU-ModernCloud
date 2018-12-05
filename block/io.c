@@ -146,3 +146,19 @@ void bdrv_refresh_limits(BlockDriverState *bs, Error **errp)
         drv->bdrv_refresh_limits(bs, errp);
     }
 }
+
+/**
+ * The copy-on-read flag is actually a reference count so multiple users may
+ * use the feature without worrying about clobbering its previous state.
+ * Copy-on-read stays enabled until all users have called to disable it.
+ */
+void bdrv_enable_copy_on_read(BlockDriverState *bs)
+{
+    atomic_inc(&bs->copy_on_read);
+}
+
+void bdrv_disable_copy_on_read(BlockDriverState *bs)
+{
+    int old = atomic_fetch_dec(&bs->copy_on_read);
+    assert(old >= 1);
+}
