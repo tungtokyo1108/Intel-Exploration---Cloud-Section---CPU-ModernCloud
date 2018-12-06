@@ -162,3 +162,64 @@ void bdrv_disable_copy_on_read(BlockDriverState *bs)
     int old = atomic_fetch_dec(&bs->copy_on_read);
     assert(old >= 1);
 }
+
+typedef struct {
+    Coroutine *co;
+    BlockDriverState *bs;
+    bool done;
+    bool begin;
+    bool recursive;
+    bool poll;
+    BdrvChild *parent;
+    bool ignore_bds_parents;
+} BdrvCoDrainData;
+
+static void coroutine_fn bdrv_drain_invoke_entry(void *opaque) 
+{
+    BdrvCoDrainData *data = opaque;
+    BlockDriverState *bs = data->bs;
+
+    if (data->begin)
+    {
+        bs->drv->bdrv_co_drain_begin(bs);
+    }
+    else
+    {
+        bs->drv->bdrv_co_drain_end(bs);
+    }
+
+    atomic_mb_set(&data->done, true);
+    bdrv_dec_in_flight(bs);
+
+    if (data->begin)
+    {
+        g_free(data);
+    }
+}
+
+static void bdrv_drain_invoke(BlockDriverState *bs, bool begin) 
+{
+    BdrvCoDrainData *data;
+    if (!bs->drv || (begin && !bs->drv->bdrv_co_drain_begin) || 
+         (!begin && !bs->bdrv_co_drain_end)) 
+    {
+        return;
+    }
+
+    data = g_new(BdrvCoDrainData, 1);
+    *data = (BdrvCoDrainData) {
+        .bs = bs,
+        .done = false,
+        .begin = begin
+    };
+
+    bdrv_inc_in_flight(bs);
+    data->co = qemu_coroutine_create(bdrv_drain_invoke_entry, data);
+    aio_co_schedule(bdrv_get_aio_context(bs), data->co);
+
+    if (!begin)
+    {
+        BDRV_POLL_WHILE(bs, !data->done);
+        g_free(data);
+    }
+}
