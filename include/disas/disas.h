@@ -11,7 +11,7 @@
 #include "qemu-common.h"
 
 #ifdef NEED_CPU_H
-#include "cpu.h"
+#include "qom/cpu.h"
 
 void disas(FILE *out, void *code, unsigned long size);
 void target_disas(FILE *out, CPUState *cpu, target_ulong code, target_ulong size);
