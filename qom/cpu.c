@@ -195,3 +195,54 @@ void cpu_dump_state(CPUState *cpu, FILE *f, fprintf_function cpu_fprintf, int fl
         cc->dump_state(cpu, f, cpu_fprintf, flags);
     }
 }
+
+void cpu_dump_statistics(CPUState *cpu, FILE *f, fprintf_function cpu_fprintf, int flags)
+{
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    if (cc->dump_statistics)
+    {
+        cc->dump_statistics(cpu, f, cpu_fprintf, flags);
+    }
+}
+
+void cpu_reset(CPUState *cpu)
+{
+    CPUClass *klass = CPU_GET_CLASS(cpu);
+    if (klass->reset != NULL) 
+    {
+        (*klass->reset)(cpu);
+    }
+    trace_guest_cpu_reset(cpu);
+}
+
+static void cpu_common_reset(CPUState *cpu)
+{
+    CPUClass *cc = CPU_GET_CLASS(cpu);
+    if (qemu_loglevel_mask(CPU_LOG_RESET))
+    {
+        qemu_log("CPU Reset (CPU %d)\n", cpu->cpu_index);
+        log_cpu_state(cpu, cc->reset_dump_flags);
+    }
+
+    cpu->interrupt_request = 0;
+    cpu->halted = 0;
+    cpu->mem_io_pc = 0;
+    cpu->mem_io_vaddr = 0;
+    cpu->icount_extra = 0;
+    cpu->icount_decr.u32 = 0;
+    cpu->can_do_io = 1;
+    cpu->exception_index = -1;
+    cpu->crash_occurred = false;
+    cpu->cflags_next_tb = -1;
+
+    if (tcg_enabled())
+    {
+        cpu_tb_jmp_cache_clear(cpu);
+        tcg_flush_softmmu_tlb(cpu);
+    }
+}
+
+static bool cpu_common_has_work(CPUState *cs)
+{
+    return false;
+}
